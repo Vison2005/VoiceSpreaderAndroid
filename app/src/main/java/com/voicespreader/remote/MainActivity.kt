@@ -28,6 +28,7 @@ class MainActivity : AppCompatActivity() {
     private val client = PairingClient()
     private lateinit var streamer: AudioStreamer
     private var pendingPairing: PairingInfo? = null
+    private var pendingLocateFallback = false
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -42,7 +43,7 @@ class MainActivity : AppCompatActivity() {
             && ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             == PackageManager.PERMISSION_GRANTED
         ) {
-            connect(pairing)
+            connect(pairing, pendingLocateFallback)
         }
     }
 
@@ -55,7 +56,7 @@ class MainActivity : AppCompatActivity() {
         if (pairing == null) {
             pairingStatus.text = "二维码不是 VoiceSpreader 配对信息"
         } else {
-            connect(pairing)
+            connect(pairing, allowLocateFallback = true)
         }
     }
 
@@ -94,20 +95,39 @@ class MainActivity : AppCompatActivity() {
         requestInitialPermissions()
     }
 
-    private fun connect(pairing: PairingInfo) {
+    private fun connect(pairing: PairingInfo, allowLocateFallback: Boolean = false) {
         if (!ensurePermission(Manifest.permission.RECORD_AUDIO)) {
             pendingPairing = pairing
+            pendingLocateFallback = allowLocateFallback
             return
         }
         pendingPairing = null
+        pendingLocateFallback = false
         pairingStatus.text = "正在连接 ${pairing.host}:${pairing.port}…"
         client.connect(
             pairing,
             onConnected = { output -> runOnUiThread { beginStreaming(output, pairing) } },
             onError = { message ->
                 runOnUiThread {
-                    pairingStatus.text = "连接失败：$message"
                     setDisconnectedUi()
+                    if (allowLocateFallback) {
+                        pairingStatus.text = "二维码地址不可达，正在自动定位电脑…"
+                        locateAndReconnect(pairing, message)
+                    } else {
+                        pairingStatus.text = "连接失败：$message"
+                    }
+                }
+            },
+        )
+    }
+
+    private fun locateAndReconnect(pairing: PairingInfo, directError: String) {
+        discovery.locate(
+            pairing,
+            onResult = { located -> runOnUiThread { connect(located) } },
+            onError = { locateError ->
+                runOnUiThread {
+                    pairingStatus.text = "连接失败：$directError；自动定位失败：$locateError"
                 }
             },
         )
@@ -170,7 +190,7 @@ class MainActivity : AppCompatActivity() {
             && ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             == PackageManager.PERMISSION_GRANTED
         ) {
-            connect(pairing)
+            connect(pairing, pendingLocateFallback)
         }
     }
 
