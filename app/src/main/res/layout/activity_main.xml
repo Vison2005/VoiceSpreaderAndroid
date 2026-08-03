@@ -69,11 +69,14 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:background="@drawable/badge_neutral"
+                android:clickable="true"
+                android:focusable="true"
                 android:gravity="center"
+                android:minHeight="42dp"
                 android:minWidth="72dp"
-                android:paddingStart="12dp"
+                android:paddingStart="14dp"
                 android:paddingTop="7dp"
-                android:paddingEnd="12dp"
+                android:paddingEnd="14dp"
                 android:paddingBottom="7dp"
                 android:text="@string/badge_disconnected"
                 android:textColor="@color/text_secondary"
@@ -231,14 +234,16 @@
                 <com.google.android.material.progressindicator.LinearProgressIndicator
                     android:id="@+id/microphoneLevel"
                     android:layout_width="match_parent"
-                    android:layout_height="8dp"
-                    android:layout_marginTop="18dp"
+                    android:layout_height="20dp"
+                    android:layout_marginTop="16dp"
                     android:max="60"
                     android:progress="0"
                     app:indicatorColor="@color/accent"
+                    app:indicatorTrackGapSize="0dp"
                     app:trackColor="@color/surface_variant"
-                    app:trackCornerRadius="4dp"
-                    app:trackThickness="8dp" />
+                    app:trackCornerRadius="9dp"
+                    app:trackStopIndicatorSize="0dp"
+                    app:trackThickness="18dp" />
 
                 <LinearLayout
                     android:layout_width="match_parent"

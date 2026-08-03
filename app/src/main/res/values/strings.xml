@@ -34,6 +34,8 @@
     <string name="level_silent">−∞ dBFS</string>
     <string name="level_value">%1$.1f dBFS</string>
     <string name="disconnect">断开连接</string>
+    <string name="disconnect_from_badge">已连接，点击即可断开</string>
+    <string name="cancel_connection">正在连接，点击即可取消</string>
     <string name="background_stream_hint">连接后可返回桌面或锁屏。系统会显示持续麦克风通知，并仅向当前局域网中的已配对电脑发送音频。</string>
     <string name="background_protection_button">后台运行保护</string>
     <string name="background_protection_button_enabled">后台保护已开启</string>

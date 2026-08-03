@@ -15,7 +15,6 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Button
 import android.widget.EditText
-import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -26,6 +25,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
 import androidx.lifecycle.Lifecycle
+import com.google.android.material.progressindicator.LinearProgressIndicator
 import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
@@ -33,7 +33,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var streamStatus: TextView
     private lateinit var connectionBadge: TextView
     private lateinit var levelText: TextView
-    private lateinit var microphoneLevel: ProgressBar
+    private lateinit var microphoneLevel: LinearProgressIndicator
     private lateinit var disconnectButton: Button
     private lateinit var backgroundSettingsButton: Button
     private lateinit var codeInput: EditText
@@ -43,6 +43,7 @@ class MainActivity : AppCompatActivity() {
     private var pendingLocateFallback = false
     private var streamingService: MicrophoneStreamingService? = null
     private var serviceBound = false
+    private var smoothedLevelDbfs = -60.0
 
     private val serviceListener = MicrophoneStreamingService.Listener { snapshot ->
         runOnUiThread { renderSnapshot(snapshot) }
@@ -118,6 +119,10 @@ class MainActivity : AppCompatActivity() {
         backgroundSettingsButton = findViewById(R.id.backgroundSettingsButton)
         codeInput = findViewById(R.id.codeInput)
 
+        connectionBadge.setOnClickListener {
+            if (connectionBadge.isEnabled) disconnectFromComputer()
+        }
+
         findViewById<Button>(R.id.scanButton).setOnClickListener {
             if (hasPermission(Manifest.permission.CAMERA)) {
                 launchScanner()
@@ -152,19 +157,7 @@ class MainActivity : AppCompatActivity() {
                 },
             )
         }
-        disconnectButton.setOnClickListener {
-            val service = streamingService
-            if (service != null) {
-                service.stopStreaming(getString(R.string.user_disconnected))
-            } else {
-                stopService(Intent(this, MicrophoneStreamingService::class.java))
-            }
-            renderSnapshot(
-                MicrophoneStreamingService.Snapshot(
-                    message = getString(R.string.user_disconnected),
-                ),
-            )
-        }
+        disconnectButton.setOnClickListener { disconnectFromComputer() }
         backgroundSettingsButton.setOnClickListener { requestBackgroundProtection() }
         updateBackgroundProtectionButton()
     }
@@ -240,7 +233,9 @@ class MainActivity : AppCompatActivity() {
                 )
                 streamStatus.setText(R.string.stream_waiting)
                 disconnectButton.isEnabled = false
-                updateLevel(-120.0)
+                connectionBadge.isEnabled = false
+                connectionBadge.contentDescription = getString(R.string.badge_disconnected)
+                updateLevel(-120.0, immediate = true)
             }
 
             MicrophoneStreamingService.State.CONNECTING -> {
@@ -251,6 +246,8 @@ class MainActivity : AppCompatActivity() {
                 )
                 streamStatus.setText(R.string.stream_preparing)
                 disconnectButton.isEnabled = true
+                connectionBadge.isEnabled = true
+                connectionBadge.contentDescription = getString(R.string.cancel_connection)
                 updateLevel(-120.0)
             }
 
@@ -262,6 +259,8 @@ class MainActivity : AppCompatActivity() {
                 )
                 streamStatus.setText(R.string.stream_active)
                 disconnectButton.isEnabled = true
+                connectionBadge.isEnabled = true
+                connectionBadge.contentDescription = getString(R.string.disconnect_from_badge)
                 updateLevel(snapshot.levelDbfs)
             }
 
@@ -273,18 +272,47 @@ class MainActivity : AppCompatActivity() {
                 )
                 streamStatus.setText(R.string.stream_stopped)
                 disconnectButton.isEnabled = false
-                updateLevel(-120.0)
+                connectionBadge.isEnabled = false
+                connectionBadge.contentDescription = getString(R.string.badge_error)
+                updateLevel(-120.0, immediate = true)
             }
         }
     }
 
-    private fun updateLevel(dbfs: Double) {
-        levelText.text = if (dbfs <= -119.0) {
+    private fun updateLevel(dbfs: Double, immediate: Boolean = false) {
+        val target = if (dbfs <= -119.0) -60.0 else dbfs.coerceIn(-60.0, 0.0)
+        smoothedLevelDbfs = if (immediate) {
+            target
+        } else {
+            // 上升更快、回落更慢，既保留瞬态响应又避免电平条跳动。
+            val coefficient = if (target > smoothedLevelDbfs) 0.58 else 0.18
+            smoothedLevelDbfs + (target - smoothedLevelDbfs) * coefficient
+        }
+
+        levelText.text = if (dbfs <= -119.0 && smoothedLevelDbfs <= -59.5) {
             getString(R.string.level_silent)
         } else {
-            getString(R.string.level_value, dbfs)
+            getString(R.string.level_value, smoothedLevelDbfs)
         }
-        microphoneLevel.progress = (dbfs + 60.0).coerceIn(0.0, 60.0).roundToInt()
+        microphoneLevel.setProgressCompat(
+            (smoothedLevelDbfs + 60.0).coerceIn(0.0, 60.0).roundToInt(),
+            !immediate,
+        )
+    }
+
+    @SuppressLint("ImplicitSamInstance")
+    private fun disconnectFromComputer() {
+        val service = streamingService
+        if (service != null) {
+            service.stopStreaming(getString(R.string.user_disconnected))
+        } else {
+            stopService(Intent(this, MicrophoneStreamingService::class.java))
+        }
+        renderSnapshot(
+            MicrophoneStreamingService.Snapshot(
+                message = getString(R.string.user_disconnected),
+            ),
+        )
     }
 
     private fun setConnectionBadge(text: String, background: Int, color: Int) {
