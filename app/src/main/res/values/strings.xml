@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">VoiceSpreader Remote Mic</string>
+    <string name="title">VoiceSpreader</string>
+    <string name="subtitle">手机听音位置麦克风</string>
+</resources>
