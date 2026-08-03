@@ -1,51 +1,93 @@
 package com.voicespreader.remote
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
-import android.view.WindowManager
+import android.os.IBinder
+import android.os.PowerManager
+import android.provider.Settings
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ProgressBar
 import android.widget.TextView
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import java.io.DataOutputStream
+import androidx.core.net.toUri
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.updatePadding
+import androidx.lifecycle.Lifecycle
 import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
     private lateinit var pairingStatus: TextView
     private lateinit var streamStatus: TextView
+    private lateinit var connectionBadge: TextView
     private lateinit var levelText: TextView
     private lateinit var microphoneLevel: ProgressBar
     private lateinit var disconnectButton: Button
+    private lateinit var backgroundSettingsButton: Button
     private lateinit var codeInput: EditText
 
     private val discovery = PairingDiscovery()
-    private val client = PairingClient()
-    private lateinit var streamer: AudioStreamer
     private var pendingPairing: PairingInfo? = null
     private var pendingLocateFallback = false
+    private var streamingService: MicrophoneStreamingService? = null
+    private var serviceBound = false
 
-    private val permissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions(),
-    ) { grants ->
-        val denied = grants.filterValues { !it }.keys
-        if (denied.isNotEmpty()) {
-            pairingStatus.text = "需要相机和麦克风权限才能扫码并测量"
-            return@registerForActivityResult
+    private val serviceListener = MicrophoneStreamingService.Listener { snapshot ->
+        runOnUiThread { renderSnapshot(snapshot) }
+    }
+
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            streamingService =
+                (binder as? MicrophoneStreamingService.LocalBinder)?.getService()
+            serviceBound = streamingService != null
+            streamingService?.registerListener(serviceListener)
         }
-        val pairing = pendingPairing
-        if (pairing != null
-            && ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-            == PackageManager.PERMISSION_GRANTED
-        ) {
-            connect(pairing, pendingLocateFallback)
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            streamingService = null
+            serviceBound = false
         }
     }
+
+    private val cameraPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            launchScanner()
+        } else {
+            pairingStatus.setText(R.string.permission_camera_required)
+        }
+    }
+
+    private val microphonePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (!granted) {
+            pairingStatus.setText(R.string.permission_microphone_required)
+            pendingPairing = null
+            return@registerForActivityResult
+        }
+        pendingPairing?.let { pairing ->
+            startStreamingService(pairing, pendingLocateFallback)
+        }
+    }
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { }
 
     private val scannerLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -54,149 +96,273 @@ class MainActivity : AppCompatActivity() {
         val payload = result.data?.getStringExtra(ScannerActivity.EXTRA_PAYLOAD)
         val pairing = payload?.let(PairingInfo::fromQrPayload)
         if (pairing == null) {
-            pairingStatus.text = "二维码不是 VoiceSpreader 配对信息"
+            pairingStatus.setText(R.string.qr_invalid)
         } else {
             connect(pairing, allowLocateFallback = true)
         }
     }
 
+    @SuppressLint("ImplicitSamInstance")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         setContentView(R.layout.activity_main)
-        streamer = AudioStreamer(this)
+        applySafeDrawingInsets()
+
         pairingStatus = findViewById(R.id.pairingStatus)
         streamStatus = findViewById(R.id.streamStatus)
+        connectionBadge = findViewById(R.id.connectionBadge)
         levelText = findViewById(R.id.levelText)
         microphoneLevel = findViewById(R.id.microphoneLevel)
         disconnectButton = findViewById(R.id.disconnectButton)
+        backgroundSettingsButton = findViewById(R.id.backgroundSettingsButton)
         codeInput = findViewById(R.id.codeInput)
 
         findViewById<Button>(R.id.scanButton).setOnClickListener {
-            if (ensurePermission(Manifest.permission.CAMERA)) {
-                scannerLauncher.launch(Intent(this, ScannerActivity::class.java))
+            if (hasPermission(Manifest.permission.CAMERA)) {
+                launchScanner()
+            } else {
+                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
             }
         }
         findViewById<Button>(R.id.codeButton).setOnClickListener {
             val code = codeInput.text.toString()
             if (code.length != 6) {
-                pairingStatus.text = "请输入电脑上显示的六位配对码"
+                pairingStatus.setText(R.string.code_invalid)
                 return@setOnClickListener
             }
-            pairingStatus.text = "正在局域网中查找电脑…"
+            pairingStatus.setText(R.string.searching_computer)
+            setConnectionBadge(
+                getString(R.string.badge_searching),
+                R.drawable.badge_connecting,
+                R.color.accent,
+            )
             discovery.discover(
                 code,
                 onResult = { pairing -> runOnUiThread { connect(pairing) } },
                 onError = { message ->
-                    runOnUiThread { pairingStatus.text = "查找失败：$message" }
+                    runOnUiThread {
+                        pairingStatus.text = getString(R.string.discovery_failed, message)
+                        setConnectionBadge(
+                            getString(R.string.badge_error),
+                            R.drawable.badge_error,
+                            R.color.error,
+                        )
+                    }
                 },
             )
         }
-        disconnectButton.setOnClickListener { disconnect("已主动断开") }
-        requestInitialPermissions()
+        disconnectButton.setOnClickListener {
+            val service = streamingService
+            if (service != null) {
+                service.stopStreaming(getString(R.string.user_disconnected))
+            } else {
+                stopService(Intent(this, MicrophoneStreamingService::class.java))
+            }
+            renderSnapshot(
+                MicrophoneStreamingService.Snapshot(
+                    message = getString(R.string.user_disconnected),
+                ),
+            )
+        }
+        backgroundSettingsButton.setOnClickListener { requestBackgroundProtection() }
+        updateBackgroundProtectionButton()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        bindService(
+            Intent(this, MicrophoneStreamingService::class.java),
+            serviceConnection,
+            Context.BIND_AUTO_CREATE,
+        )
+    }
+
+    override fun onStop() {
+        if (serviceBound) {
+            streamingService?.unregisterListener(serviceListener)
+            unbindService(serviceConnection)
+            serviceBound = false
+            streamingService = null
+        }
+        super.onStop()
     }
 
     private fun connect(pairing: PairingInfo, allowLocateFallback: Boolean = false) {
-        if (!ensurePermission(Manifest.permission.RECORD_AUDIO)) {
-            pendingPairing = pairing
-            pendingLocateFallback = allowLocateFallback
+        pendingPairing = pairing
+        pendingLocateFallback = allowLocateFallback
+        if (!hasPermission(Manifest.permission.RECORD_AUDIO)) {
+            microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
             return
         }
+        startStreamingService(pairing, allowLocateFallback)
+    }
+
+    private fun startStreamingService(pairing: PairingInfo, allowLocateFallback: Boolean) {
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
         pendingPairing = null
         pendingLocateFallback = false
-        pairingStatus.text = "正在连接 ${pairing.host}:${pairing.port}…"
-        client.connect(
-            pairing,
-            onConnected = { output -> runOnUiThread { beginStreaming(output, pairing) } },
-            onError = { message ->
-                runOnUiThread {
-                    setDisconnectedUi()
-                    if (allowLocateFallback) {
-                        pairingStatus.text = "二维码地址不可达，正在自动定位电脑…"
-                        locateAndReconnect(pairing, message)
-                    } else {
-                        pairingStatus.text = "连接失败：$message"
-                    }
-                }
-            },
+        requestNotificationPermissionIfNeeded()
+        pairingStatus.text = getString(R.string.connecting_endpoint, pairing.host, pairing.port)
+        setConnectionBadge(
+            getString(R.string.badge_connecting),
+            R.drawable.badge_connecting,
+            R.color.accent,
         )
-    }
-
-    private fun locateAndReconnect(pairing: PairingInfo, directError: String) {
-        discovery.locate(
-            pairing,
-            onResult = { located -> runOnUiThread { connect(located) } },
-            onError = { locateError ->
-                runOnUiThread {
-                    pairingStatus.text = "连接失败：$directError；自动定位失败：$locateError"
-                }
-            },
-        )
-    }
-
-    private fun beginStreaming(output: DataOutputStream, pairing: PairingInfo) {
-        pairingStatus.text = "已配对 ${pairing.host}:${pairing.port}"
-        streamStatus.text = "正在回传 48 kHz / PCM16 / 单声道原始采样"
         disconnectButton.isEnabled = true
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        streamer.start(
-            output,
-            onLevel = { dbfs -> runOnUiThread { updateLevel(dbfs) } },
-            onError = { message -> runOnUiThread { disconnect("回传失败：$message") } },
-        )
+        runCatching {
+            ContextCompat.startForegroundService(
+                this,
+                MicrophoneStreamingService.createStartIntent(
+                    this,
+                    pairing,
+                    allowLocateFallback,
+                ),
+            )
+        }.onFailure {
+            renderSnapshot(
+                MicrophoneStreamingService.Snapshot(
+                    state = MicrophoneStreamingService.State.ERROR,
+                    message = getString(R.string.background_start_failed, it.message),
+                ),
+            )
+        }
+    }
+
+    private fun renderSnapshot(snapshot: MicrophoneStreamingService.Snapshot) {
+        pairingStatus.text = snapshot.message
+        when (snapshot.state) {
+            MicrophoneStreamingService.State.IDLE -> {
+                setConnectionBadge(
+                    getString(R.string.badge_disconnected),
+                    R.drawable.badge_neutral,
+                    R.color.text_secondary,
+                )
+                streamStatus.setText(R.string.stream_waiting)
+                disconnectButton.isEnabled = false
+                updateLevel(-120.0)
+            }
+
+            MicrophoneStreamingService.State.CONNECTING -> {
+                setConnectionBadge(
+                    getString(R.string.badge_connecting),
+                    R.drawable.badge_connecting,
+                    R.color.accent,
+                )
+                streamStatus.setText(R.string.stream_preparing)
+                disconnectButton.isEnabled = true
+                updateLevel(-120.0)
+            }
+
+            MicrophoneStreamingService.State.STREAMING -> {
+                setConnectionBadge(
+                    getString(R.string.badge_connected),
+                    R.drawable.badge_connected,
+                    R.color.success,
+                )
+                streamStatus.setText(R.string.stream_active)
+                disconnectButton.isEnabled = true
+                updateLevel(snapshot.levelDbfs)
+            }
+
+            MicrophoneStreamingService.State.ERROR -> {
+                setConnectionBadge(
+                    getString(R.string.badge_error),
+                    R.drawable.badge_error,
+                    R.color.error,
+                )
+                streamStatus.setText(R.string.stream_stopped)
+                disconnectButton.isEnabled = false
+                updateLevel(-120.0)
+            }
+        }
     }
 
     private fun updateLevel(dbfs: Double) {
-        levelText.text = if (dbfs <= -119.0) "−∞ dBFS" else "%.1f dBFS".format(dbfs)
+        levelText.text = if (dbfs <= -119.0) {
+            getString(R.string.level_silent)
+        } else {
+            getString(R.string.level_value, dbfs)
+        }
         microphoneLevel.progress = (dbfs + 60.0).coerceIn(0.0, 60.0).roundToInt()
     }
 
-    private fun disconnect(reason: String) {
-        streamer.stop()
-        client.disconnect()
-        pairingStatus.text = reason
-        setDisconnectedUi()
+    private fun setConnectionBadge(text: String, background: Int, color: Int) {
+        connectionBadge.text = text
+        connectionBadge.setBackgroundResource(background)
+        connectionBadge.setTextColor(ContextCompat.getColor(this, color))
     }
 
-    private fun setDisconnectedUi() {
-        streamStatus.text = "等待连接"
-        disconnectButton.isEnabled = false
-        microphoneLevel.progress = 0
-        levelText.text = "−∞ dBFS"
-        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    private fun launchScanner() {
+        scannerLauncher.launch(Intent(this, ScannerActivity::class.java))
     }
 
-    private fun ensurePermission(permission: String): Boolean {
-        if (ContextCompat.checkSelfPermission(this, permission)
-            == PackageManager.PERMISSION_GRANTED
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+            && !hasPermission(Manifest.permission.POST_NOTIFICATIONS)
         ) {
-            return true
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
-        permissionLauncher.launch(arrayOf(permission))
-        return false
     }
 
-    private fun requestInitialPermissions() {
-        val missing = listOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
-            .filter {
-                ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+    @SuppressLint("BatteryLife")
+    private fun requestBackgroundProtection() {
+        val powerManager = getSystemService(PowerManager::class.java)
+        if (powerManager.isIgnoringBatteryOptimizations(packageName)) {
+            pairingStatus.setText(R.string.background_protection_enabled)
+            updateBackgroundProtectionButton()
+            return
+        }
+        val directRequest = Intent(
+            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+            "package:$packageName".toUri(),
+        )
+        runCatching { startActivity(directRequest) }.onFailure {
+            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        }
+    }
+
+    private fun updateBackgroundProtectionButton() {
+        val powerManager = getSystemService(PowerManager::class.java)
+        backgroundSettingsButton.text =
+            if (powerManager.isIgnoringBatteryOptimizations(packageName)) {
+                getString(R.string.background_protection_button_enabled)
+            } else {
+                getString(R.string.background_protection_button)
             }
-        if (missing.isNotEmpty()) permissionLauncher.launch(missing.toTypedArray())
+    }
+
+    private fun hasPermission(permission: String): Boolean =
+        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+
+    private fun applySafeDrawingInsets() {
+        val root = findViewById<android.view.View>(R.id.mainRoot)
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val safe = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or
+                    WindowInsetsCompat.Type.displayCutout(),
+            )
+            view.updatePadding(
+                left = safe.left,
+                top = safe.top,
+                right = safe.right,
+                bottom = safe.bottom,
+            )
+            insets
+        }
+        ViewCompat.requestApplyInsets(root)
     }
 
     override fun onResume() {
         super.onResume()
+        if (::backgroundSettingsButton.isInitialized) updateBackgroundProtectionButton()
         val pairing = pendingPairing
-        if (pairing != null
-            && ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-            == PackageManager.PERMISSION_GRANTED
-        ) {
-            connect(pairing, pendingLocateFallback)
+        if (pairing != null && hasPermission(Manifest.permission.RECORD_AUDIO)) {
+            startStreamingService(pairing, pendingLocateFallback)
         }
     }
 
     override fun onDestroy() {
-        streamer.stop()
-        client.close()
         discovery.close()
         super.onDestroy()
     }

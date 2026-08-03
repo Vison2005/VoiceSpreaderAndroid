@@ -10,7 +10,7 @@ android {
     defaultConfig {
         applicationId = "com.voicespreader.remote"
         minSdk = 23
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
 
@@ -37,9 +37,10 @@ android {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.core:core-ktx:1.16.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.activity:activity-ktx:1.10.1")
+    implementation("com.google.android.material:material:1.14.0")
 
     val cameraXVersion = "1.6.1"
     implementation("androidx.camera:camera-core:$cameraXVersion")

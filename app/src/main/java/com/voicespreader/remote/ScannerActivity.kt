@@ -5,6 +5,9 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.view.View
+import android.widget.FrameLayout
+import androidx.activity.enableEdgeToEdge
 import androidx.annotation.OptIn
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
@@ -14,6 +17,10 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.updateLayoutParams
+import androidx.core.view.updatePadding
 import com.google.mlkit.vision.barcode.BarcodeScanner
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
@@ -33,7 +40,10 @@ class ScannerActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         setContentView(R.layout.activity_scanner)
+        applySafeInsets()
+        findViewById<View>(R.id.closeScannerButton).setOnClickListener { finish() }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             != PackageManager.PERMISSION_GRANTED
         ) {
@@ -47,6 +57,38 @@ class ScannerActivity : AppCompatActivity() {
         scanner = BarcodeScanning.getClient(options)
         startCamera(findViewById(R.id.previewView))
     }
+
+    private fun applySafeInsets() {
+        val topPanel = findViewById<View>(R.id.scannerTopPanel)
+        val bottomHint = findViewById<View>(R.id.scannerBottomHint)
+        ViewCompat.setOnApplyWindowInsetsListener(topPanel) { view, insets ->
+            val safe = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or
+                    WindowInsetsCompat.Type.displayCutout(),
+            )
+            view.updatePadding(
+                left = safe.left + dp(14),
+                top = safe.top + dp(14),
+                right = safe.right + dp(14),
+                bottom = dp(14),
+            )
+            insets
+        }
+        ViewCompat.setOnApplyWindowInsetsListener(bottomHint) { view, insets ->
+            val safe = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or
+                    WindowInsetsCompat.Type.displayCutout(),
+            )
+            view.updateLayoutParams<FrameLayout.LayoutParams> {
+                bottomMargin = safe.bottom + dp(24)
+            }
+            insets
+        }
+        ViewCompat.requestApplyInsets(topPanel)
+        ViewCompat.requestApplyInsets(bottomHint)
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     @OptIn(markerClass = [ExperimentalGetImage::class])
     private fun startCamera(previewView: PreviewView) {
