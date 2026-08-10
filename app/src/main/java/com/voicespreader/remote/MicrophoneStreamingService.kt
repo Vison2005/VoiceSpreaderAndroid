@@ -25,6 +25,7 @@ class MicrophoneStreamingService : Service() {
     enum class State {
         IDLE,
         CONNECTING,
+        CONNECTED,
         STREAMING,
         ERROR,
     }
@@ -78,6 +79,12 @@ class MicrophoneStreamingService : Service() {
     private var listener: Listener? = null
     private var snapshot = Snapshot()
     private var connectionGeneration = 0
+    @Volatile
+    private var microphoneGeneration = 0
+    @Volatile
+    private var microphoneRequested = false
+    private var streamOutput: DataOutputStream? = null
+    private var connectedPairing: PairingInfo? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
 
@@ -106,21 +113,13 @@ class MicrophoneStreamingService : Service() {
             fail("配对信息不完整")
             return START_NOT_STICKY
         }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            fail("麦克风权限未授予")
-            return START_NOT_STICKY
-        }
-
         val foregroundStarted = runCatching {
-            startAsForeground("正在连接电脑")
+            startAsForeground("正在连接电脑", microphoneActive = false)
         }.isSuccess
         if (!foregroundStarted) {
             fail("系统未允许启动后台麦克风服务")
             return START_NOT_STICKY
         }
-        acquireConnectionLocks()
         startConnection(pairing, intent.getBooleanExtra(EXTRA_ALLOW_LOCATE, false))
         return START_NOT_STICKY
     }
@@ -138,7 +137,12 @@ class MicrophoneStreamingService : Service() {
 
     fun stopStreaming(reason: String = "已主动断开") {
         ++connectionGeneration
+        ++microphoneGeneration
         streamer.stop()
+        microphoneRequested = false
+        sendMicrophoneState(false)
+        streamOutput = null
+        connectedPairing = null
         client.disconnect()
         releaseConnectionLocks()
         publish(Snapshot(State.IDLE, reason))
@@ -148,7 +152,11 @@ class MicrophoneStreamingService : Service() {
 
     private fun startConnection(pairing: PairingInfo, allowLocateFallback: Boolean) {
         val generation = ++connectionGeneration
+        ++microphoneGeneration
         streamer.stop()
+        microphoneRequested = false
+        streamOutput = null
+        connectedPairing = null
         client.disconnect()
         publish(Snapshot(State.CONNECTING, "正在连接 ${pairing.host}:${pairing.port}…"))
         updateNotification("正在连接 ${pairing.host}:${pairing.port}")
@@ -157,7 +165,14 @@ class MicrophoneStreamingService : Service() {
             onConnected = { output ->
                 mainHandler.post {
                     if (generation == connectionGeneration) {
-                        beginStreaming(output, pairing)
+                        beginConnected(output, pairing)
+                    }
+                }
+            },
+            onMicrophoneCommand = { enabled ->
+                mainHandler.post {
+                    if (generation == connectionGeneration) {
+                        setMicrophoneEnabled(enabled)
                     }
                 }
             },
@@ -200,30 +215,147 @@ class MicrophoneStreamingService : Service() {
         )
     }
 
-    private fun beginStreaming(output: DataOutputStream, pairing: PairingInfo) {
+    private fun beginConnected(output: DataOutputStream, pairing: PairingInfo) {
+        ++microphoneGeneration
+        microphoneRequested = false
+        streamOutput = output
+        connectedPairing = pairing
         publish(
             Snapshot(
-                state = State.STREAMING,
+                state = State.CONNECTED,
                 message = "已连接 ${pairing.host}:${pairing.port}",
             ),
         )
-        updateNotification("正在向 ${pairing.host}:${pairing.port} 回传麦克风")
+        updateNotification("已连接电脑 · 麦克风未启用")
+        sendMicrophoneState(false)
+    }
+
+    fun setMicrophoneEnabled(enabled: Boolean) {
+        val output = streamOutput ?: return
+        if (microphoneRequested == enabled) return
+        microphoneRequested = enabled
+
+        val generation = ++microphoneGeneration
+        if (!enabled) {
+            streamer.stop()
+            releaseConnectionLocks()
+            sendMicrophoneState(false)
+            val endpoint = connectedPairing
+            publish(
+                Snapshot(
+                    state = State.CONNECTED,
+                    message = endpoint?.let { "已连接 ${it.host}:${it.port}" } ?: "已连接电脑",
+                ),
+            )
+            startAsForeground("已连接电脑 · 麦克风未启用", microphoneActive = false)
+            return
+        }
+
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            microphoneRequested = false
+            val message = "请先在手机端授予麦克风权限"
+            sendControlError(message)
+            sendMicrophoneState(false)
+            publish(Snapshot(State.CONNECTED, message))
+            updateNotification("已连接电脑 · 等待麦克风权限")
+            return
+        }
+
+        val foregroundReady = runCatching {
+            startAsForeground("正在启用手机麦克风", microphoneActive = true)
+        }.isSuccess
+        if (!foregroundReady) {
+            microphoneRequested = false
+            val message = "系统不允许在当前状态启用麦克风，请打开应用后重试"
+            sendControlError(message)
+            sendMicrophoneState(false)
+            publish(Snapshot(State.CONNECTED, message))
+            return
+        }
+
+        acquireConnectionLocks()
+        publish(Snapshot(State.CONNECTED, "正在启用手机麦克风…"))
         streamer.start(
             output,
+            onStarted = {
+                if (generation == microphoneGeneration) {
+                    sendMicrophoneState(true)
+                    mainHandler.post {
+                        if (generation == microphoneGeneration && streamOutput === output) {
+                            publish(
+                                Snapshot(
+                                    state = State.STREAMING,
+                                    message = "手机麦克风正在回传",
+                                ),
+                            )
+                            updateNotification("手机麦克风正在回传")
+                        }
+                    }
+                }
+            },
             onLevel = { level ->
                 mainHandler.post {
-                    if (snapshot.state == State.STREAMING) {
+                    if (generation == microphoneGeneration
+                        && snapshot.state == State.STREAMING
+                    ) {
                         publish(snapshot.copy(levelDbfs = level))
                     }
                 }
             },
-            onError = { message -> mainHandler.post { fail("回传失败：$message") } },
+            onError = { message ->
+                mainHandler.post {
+                    if (generation == microphoneGeneration) {
+                        ++microphoneGeneration
+                        microphoneRequested = false
+                        streamer.stop()
+                        releaseConnectionLocks()
+                        sendMicrophoneState(false)
+                        sendControlError("回传失败：$message")
+                        publish(Snapshot(State.CONNECTED, "麦克风回传失败：$message"))
+                        startAsForeground(
+                            "已连接电脑 · 麦克风回传失败",
+                            microphoneActive = false,
+                        )
+                    }
+                }
+            },
         )
+    }
+
+    private fun sendMicrophoneState(enabled: Boolean) {
+        val output = streamOutput ?: return
+        runCatching {
+            synchronized(output) {
+                output.writeInt(2)
+                output.writeByte(2)
+                output.writeByte(if (enabled) 1 else 0)
+                output.flush()
+            }
+        }
+    }
+
+    private fun sendControlError(message: String) {
+        val output = streamOutput ?: return
+        val payload = message.toByteArray(Charsets.UTF_8)
+        runCatching {
+            synchronized(output) {
+                output.writeInt(1 + payload.size)
+                output.writeByte(3)
+                output.write(payload)
+                output.flush()
+            }
+        }
     }
 
     private fun fail(message: String) {
         ++connectionGeneration
+        ++microphoneGeneration
         streamer.stop()
+        microphoneRequested = false
+        streamOutput = null
+        connectedPairing = null
         client.disconnect()
         releaseConnectionLocks()
         publish(Snapshot(State.ERROR, message))
@@ -236,12 +368,10 @@ class MicrophoneStreamingService : Service() {
         listener?.onSnapshotChanged(value)
     }
 
-    private fun startAsForeground(message: String) {
-        val foregroundTypes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+    private fun startAsForeground(message: String, microphoneActive: Boolean) {
+        val foregroundTypes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+                if (microphoneActive) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
         } else {
             0
         }
@@ -333,7 +463,11 @@ class MicrophoneStreamingService : Service() {
 
     override fun onDestroy() {
         ++connectionGeneration
+        ++microphoneGeneration
         streamer.stop()
+        microphoneRequested = false
+        streamOutput = null
+        connectedPairing = null
         client.close()
         discovery.close()
         releaseConnectionLocks()

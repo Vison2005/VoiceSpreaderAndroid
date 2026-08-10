@@ -27,6 +27,7 @@ class AudioStreamer(private val context: Context) {
 
     fun start(
         output: DataOutputStream,
+        onStarted: () -> Unit,
         onLevel: (Double) -> Unit,
         onError: (String) -> Unit,
     ) {
@@ -42,6 +43,7 @@ class AudioStreamer(private val context: Context) {
                 if (recorder.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
                     error("手机系统没有提供麦克风数据")
                 }
+                onStarted()
 
                 val samples = ShortArray(CHUNK_FRAMES)
                 var frameIndex = 0L

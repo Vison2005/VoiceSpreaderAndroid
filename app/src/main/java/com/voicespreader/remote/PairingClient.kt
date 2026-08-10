@@ -11,22 +11,36 @@ import java.util.concurrent.Executors
 
 class PairingClient {
     private val executor = Executors.newSingleThreadExecutor()
+    private val connectionLock = Any()
 
     @Volatile
     private var socket: Socket? = null
+    private var connectionGeneration = 0
 
     fun connect(
         info: PairingInfo,
         onConnected: (DataOutputStream) -> Unit,
+        onMicrophoneCommand: (Boolean) -> Unit,
         onError: (String) -> Unit,
     ) {
-        disconnect()
+        val generation = synchronized(connectionLock) {
+            ++connectionGeneration
+            runCatching { socket?.close() }
+            socket = null
+            connectionGeneration
+        }
         executor.execute {
             runCatching {
                 val connection = Socket()
                 connection.tcpNoDelay = true
                 connection.connect(InetSocketAddress(info.host, info.port), 4000)
-                socket = connection
+                synchronized(connectionLock) {
+                    if (generation != connectionGeneration) {
+                        connection.close()
+                        error("连接已取消")
+                    }
+                    socket = connection
+                }
                 val output = DataOutputStream(BufferedOutputStream(connection.getOutputStream(), 32768))
                 val hello = JSONObject()
                     .put("type", "hello")
@@ -43,17 +57,37 @@ class PairingClient {
                 if (response.optString("type") != "accepted") {
                     error(response.optString("message", "电脑拒绝了配对"))
                 }
-                output
-            }.onSuccess(onConnected).onFailure {
-                disconnect()
-                onError(it.message ?: "无法连接电脑")
+                onConnected(output)
+
+                val input = connection.getInputStream()
+                while (generation == synchronized(connectionLock) { connectionGeneration }) {
+                    val command = JSONObject(readAsciiLine(input, 4096))
+                    if (command.optString("type") == "setMicrophone") {
+                        onMicrophoneCommand(command.optBoolean("enabled", false))
+                    }
+                }
+            }.onFailure { error ->
+                val shouldReport = synchronized(connectionLock) {
+                    val current = generation == connectionGeneration
+                    if (current) {
+                        runCatching { socket?.close() }
+                        socket = null
+                    }
+                    current
+                }
+                if (shouldReport) {
+                    onError(error.message ?: "无法连接电脑")
+                }
             }
         }
     }
 
     fun disconnect() {
-        runCatching { socket?.close() }
-        socket = null
+        synchronized(connectionLock) {
+            ++connectionGeneration
+            runCatching { socket?.close() }
+            socket = null
+        }
     }
 
     fun isConnected(): Boolean = socket?.isConnected == true && socket?.isClosed == false
@@ -67,7 +101,7 @@ class PairingClient {
         val bytes = ArrayList<Byte>()
         while (bytes.size < maximumBytes) {
             val value = input.read()
-            if (value < 0) error("电脑在握手完成前断开")
+            if (value < 0) error("电脑已断开连接")
             if (value == '\n'.code) break
             bytes += value.toByte()
         }

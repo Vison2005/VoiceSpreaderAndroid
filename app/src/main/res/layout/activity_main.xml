@@ -223,11 +223,30 @@
                     android:textColor="@color/text_secondary"
                     android:textSize="13sp" />
 
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/microphoneButton"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="54dp"
+                    android:layout_marginTop="16dp"
+                    android:checkable="true"
+                    android:enabled="false"
+                    android:text="@string/enable_microphone"
+                    android:textAllCaps="false"
+                    android:textColor="@color/primary"
+                    android:textSize="15sp"
+                    app:backgroundTint="@color/surface_variant"
+                    app:cornerRadius="14dp"
+                    app:icon="@drawable/ic_microphone"
+                    app:iconGravity="textStart"
+                    app:iconPadding="9dp"
+                    app:iconTint="@color/accent" />
+
                 <com.google.android.material.progressindicator.LinearProgressIndicator
                     android:id="@+id/microphoneLevel"
                     android:layout_width="match_parent"
                     android:layout_height="20dp"
-                    android:layout_marginTop="16dp"
+                    android:layout_marginTop="14dp"
                     android:max="60"
                     android:progress="0"
                     app:indicatorColor="@color/accent"

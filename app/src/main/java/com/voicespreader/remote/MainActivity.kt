@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
@@ -26,6 +27,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
 import androidx.lifecycle.Lifecycle
 import com.google.android.material.progressindicator.LinearProgressIndicator
+import com.google.android.material.button.MaterialButton
 import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
@@ -35,6 +37,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var levelText: TextView
     private lateinit var microphoneLevel: LinearProgressIndicator
     private lateinit var disconnectButton: Button
+    private lateinit var microphoneButton: MaterialButton
     private lateinit var backgroundSettingsButton: Button
     private lateinit var codeInput: EditText
 
@@ -44,6 +47,7 @@ class MainActivity : AppCompatActivity() {
     private var streamingService: MicrophoneStreamingService? = null
     private var serviceBound = false
     private var smoothedLevelDbfs = -60.0
+    private var latestSnapshot = MicrophoneStreamingService.Snapshot()
 
     private val serviceListener = MicrophoneStreamingService.Listener { snapshot ->
         runOnUiThread { renderSnapshot(snapshot) }
@@ -78,12 +82,9 @@ class MainActivity : AppCompatActivity() {
     ) { granted ->
         if (!granted) {
             pairingStatus.setText(R.string.permission_microphone_required)
-            pendingPairing = null
             return@registerForActivityResult
         }
-        pendingPairing?.let { pairing ->
-            startStreamingService(pairing, pendingLocateFallback)
-        }
+        streamingService?.setMicrophoneEnabled(true)
     }
 
     private val notificationPermissionLauncher = registerForActivityResult(
@@ -115,6 +116,7 @@ class MainActivity : AppCompatActivity() {
         connectionBadge = findViewById(R.id.connectionBadge)
         levelText = findViewById(R.id.levelText)
         microphoneLevel = findViewById(R.id.microphoneLevel)
+        microphoneButton = findViewById(R.id.microphoneButton)
         disconnectButton = findViewById(R.id.disconnectButton)
         backgroundSettingsButton = findViewById(R.id.backgroundSettingsButton)
         codeInput = findViewById(R.id.codeInput)
@@ -158,6 +160,7 @@ class MainActivity : AppCompatActivity() {
             )
         }
         disconnectButton.setOnClickListener { disconnectFromComputer() }
+        microphoneButton.setOnClickListener { toggleMicrophone() }
         backgroundSettingsButton.setOnClickListener { requestBackgroundProtection() }
         updateBackgroundProtectionButton()
     }
@@ -184,10 +187,6 @@ class MainActivity : AppCompatActivity() {
     private fun connect(pairing: PairingInfo, allowLocateFallback: Boolean = false) {
         pendingPairing = pairing
         pendingLocateFallback = allowLocateFallback
-        if (!hasPermission(Manifest.permission.RECORD_AUDIO)) {
-            microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-            return
-        }
         startStreamingService(pairing, allowLocateFallback)
     }
 
@@ -223,6 +222,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderSnapshot(snapshot: MicrophoneStreamingService.Snapshot) {
+        latestSnapshot = snapshot
         pairingStatus.text = snapshot.message
         when (snapshot.state) {
             MicrophoneStreamingService.State.IDLE -> {
@@ -235,6 +235,8 @@ class MainActivity : AppCompatActivity() {
                 disconnectButton.isEnabled = false
                 connectionBadge.isEnabled = false
                 connectionBadge.contentDescription = getString(R.string.badge_disconnected)
+                microphoneButton.isEnabled = false
+                renderMicrophoneButton(false)
                 updateLevel(-120.0, immediate = true)
             }
 
@@ -248,7 +250,24 @@ class MainActivity : AppCompatActivity() {
                 disconnectButton.isEnabled = true
                 connectionBadge.isEnabled = true
                 connectionBadge.contentDescription = getString(R.string.cancel_connection)
+                microphoneButton.isEnabled = false
+                renderMicrophoneButton(false)
                 updateLevel(-120.0)
+            }
+
+            MicrophoneStreamingService.State.CONNECTED -> {
+                setConnectionBadge(
+                    getString(R.string.badge_connected),
+                    R.drawable.badge_connected,
+                    R.color.success,
+                )
+                streamStatus.setText(R.string.stream_ready)
+                disconnectButton.isEnabled = true
+                connectionBadge.isEnabled = true
+                connectionBadge.contentDescription = getString(R.string.disconnect_from_badge)
+                microphoneButton.isEnabled = true
+                renderMicrophoneButton(false)
+                updateLevel(-120.0, immediate = true)
             }
 
             MicrophoneStreamingService.State.STREAMING -> {
@@ -261,6 +280,8 @@ class MainActivity : AppCompatActivity() {
                 disconnectButton.isEnabled = true
                 connectionBadge.isEnabled = true
                 connectionBadge.contentDescription = getString(R.string.disconnect_from_badge)
+                microphoneButton.isEnabled = true
+                renderMicrophoneButton(true)
                 updateLevel(snapshot.levelDbfs)
             }
 
@@ -274,9 +295,53 @@ class MainActivity : AppCompatActivity() {
                 disconnectButton.isEnabled = false
                 connectionBadge.isEnabled = false
                 connectionBadge.contentDescription = getString(R.string.badge_error)
+                microphoneButton.isEnabled = false
+                renderMicrophoneButton(false)
                 updateLevel(-120.0, immediate = true)
             }
         }
+    }
+
+    private fun toggleMicrophone() {
+        val service = streamingService ?: return
+        if (latestSnapshot.state == MicrophoneStreamingService.State.STREAMING) {
+            service.setMicrophoneEnabled(false)
+            return
+        }
+        if (latestSnapshot.state != MicrophoneStreamingService.State.CONNECTED) return
+        if (hasPermission(Manifest.permission.RECORD_AUDIO)) {
+            service.setMicrophoneEnabled(true)
+        } else {
+            microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    private fun renderMicrophoneButton(enabled: Boolean) {
+        microphoneButton.text = getString(
+            if (enabled) R.string.disable_microphone else R.string.enable_microphone,
+        )
+        microphoneButton.setIconResource(
+            if (enabled) R.drawable.ic_microphone_off else R.drawable.ic_microphone,
+        )
+        microphoneButton.backgroundTintList = ColorStateList.valueOf(
+            ContextCompat.getColor(
+                this,
+                if (enabled) R.color.primary else R.color.surface_variant,
+            ),
+        )
+        microphoneButton.setTextColor(
+            ContextCompat.getColor(
+                this,
+                if (enabled) android.R.color.white else R.color.primary,
+            ),
+        )
+        microphoneButton.iconTint = ColorStateList.valueOf(
+            ContextCompat.getColor(
+                this,
+                if (enabled) android.R.color.white else R.color.accent,
+            ),
+        )
+        microphoneButton.isChecked = enabled
     }
 
     private fun updateLevel(dbfs: Double, immediate: Boolean = false) {
@@ -385,7 +450,7 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         if (::backgroundSettingsButton.isInitialized) updateBackgroundProtectionButton()
         val pairing = pendingPairing
-        if (pairing != null && hasPermission(Manifest.permission.RECORD_AUDIO)) {
+        if (pairing != null) {
             startStreamingService(pairing, pendingLocateFallback)
         }
     }
