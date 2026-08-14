@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
+import android.media.AudioTimestamp
 import android.media.MediaRecorder
 import android.os.Build
 import androidx.core.content.ContextCompat
@@ -19,6 +20,7 @@ class AudioStreamer(private val context: Context) {
     companion object {
         const val SAMPLE_RATE = 48_000
         private const val CHUNK_FRAMES = 960
+        private const val CLOCK_SAMPLE_INTERVAL_CHUNKS = 50
     }
 
     private val running = AtomicBoolean(false)
@@ -48,6 +50,8 @@ class AudioStreamer(private val context: Context) {
                 val samples = ShortArray(CHUNK_FRAMES)
                 var frameIndex = 0L
                 var levelCounter = 0
+                var clockSampleCounter = 0
+                val timestamp = AudioTimestamp()
                 while (running.get()) {
                     val count = recorder.read(
                         samples,
@@ -69,6 +73,23 @@ class AudioStreamer(private val context: Context) {
                         output.flush()
                     }
                     frameIndex += count
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
+                        && ++clockSampleCounter >= CLOCK_SAMPLE_INTERVAL_CHUNKS
+                        && recorder.getTimestamp(
+                            timestamp,
+                            AudioTimestamp.TIMEBASE_MONOTONIC,
+                        ) == AudioRecord.SUCCESS) {
+                        synchronized(output) {
+                            output.writeInt(17)
+                            output.writeByte(4)
+                            // 使用当前流的本地帧序号作为时钟模型的帧坐标；时间戳的固定偏移不影响斜率。
+                            output.writeLong(frameIndex)
+                            output.writeLong(timestamp.nanoTime)
+                            output.flush()
+                        }
+                        clockSampleCounter = 0
+                    }
 
                     if (++levelCounter >= 5) {
                         var energy = 0.0
