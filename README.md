@@ -22,6 +22,14 @@ powershell -ExecutionPolicy Bypass -File .\build-local.ps1
 
 调试 APK 位于 `app\build\outputs\apk\debug\app-debug.apk`。这是个人调试版本，不需要申请发布签名。
 
+正式自签名 APK 可执行以下命令生成：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\package-release.ps1
+```
+
+输出位于 `dist\release`。发布密钥和随机口令保存在项目目录外的 `.signing\VoiceSpreader\android`，不会提交到 Git；后续版本必须保留并复用该密钥，才能覆盖安装现有版本。
+
 ## 使用方法
 
 1. 确保手机和电脑位于同一个可信局域网。
@@ -47,7 +55,7 @@ powershell -ExecutionPolicy Bypass -File .\build-local.ps1
 
 ## 音频与连接协议
 
-手机使用 48 kHz、PCM16、单声道 `AudioRecord`。支持时选择 `UNPROCESSED`，否则回退到 `VOICE_RECOGNITION`，尽量避免 AGC、降噪和回声消除。每个音频块携带从录音开始累计的 64 位采样帧号；电脑使用采样帧号计算各输出的相对到达差，不把网络包抵达时间当成声学基准。
+手机使用 48 kHz、PCM16、单声道 `AudioRecord`。支持时选择 `UNPROCESSED`，否则回退到 `VOICE_RECOGNITION`，尽量避免 AGC、降噪和回声消除。每个音频块携带 Android 音频硬件时间戳对应的 64 位采样帧位置；电脑使用采样帧位置计算各输出的相对到达差，不把网络包抵达时间当成声学基准。
 
 同一条 TCP 连接采用双向控制：电脑向手机发送麦克风启停命令，手机返回实际采集状态或错误；只有状态确认为启用后，PCM 帧才会被电脑接纳。手机端麦克风按钮使用同一状态机，因此从任一端操作都会同步更新两边界面。
 

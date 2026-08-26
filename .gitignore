@@ -2,6 +2,7 @@
 /.idea/
 /build/
 /app/build/
+/dist/
 /local.properties
 *.iml
 *.apk

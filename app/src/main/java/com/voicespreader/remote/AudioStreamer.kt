@@ -83,8 +83,8 @@ class AudioStreamer(private val context: Context) {
                         synchronized(output) {
                             output.writeInt(17)
                             output.writeByte(4)
-                            // 使用当前流的本地帧序号作为时钟模型的帧坐标；时间戳的固定偏移不影响斜率。
-                            output.writeLong(frameIndex)
+                            // AudioTimestamp 的时间必须与它自己的硬件帧位置配对；固定原点偏移不影响斜率。
+                            output.writeLong(timestamp.framePosition)
                             output.writeLong(timestamp.nanoTime)
                             output.flush()
                         }
