@@ -1,4 +1,4 @@
-# VoiceSpreader Android v0.1.0
+# VoiceSpreader Android v1.1.0
 
 这是 VoiceSpreader Windows v1.1.0 的 Android 声学校准伴侣应用首个正式发布版本。
 
