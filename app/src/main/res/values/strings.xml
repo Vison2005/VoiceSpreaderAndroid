@@ -1,7 +1,8 @@
 <resources>
     <string name="app_name">VoiceSpreader</string>
     <string name="title">VoiceSpreader</string>
-    <string name="notification_channel_name">麦克风同步连接</string>
+    <string name="title_subtitle">设备互联 · v1.2.1</string>
+    <string name="notification_channel_name">设备互联</string>
     <string name="notification_channel_description">在后台保持与电脑连接</string>
     <string name="permission_camera_required">需要相机权限才能扫描二维码</string>
     <string name="permission_microphone_required">需要麦克风权限才能启用回传；连接电脑本身不需要该权限</string>
@@ -24,11 +25,14 @@
     <string name="pairing_code_hint">六位配对码</string>
     <string name="find_computer">查找</string>
     <string name="not_paired">尚未配对</string>
-    <string name="microphone_stream">麦克风回传</string>
+    <string name="windows_playback">将手机作为电脑扬声器</string>
+    <string name="playback_waiting">连接电脑后等待 Windows 端启动</string>
+    <string name="playback_controlled_by_windows">由 Windows 端选择声音来源并控制播放</string>
+    <string name="microphone_stream">手机作为电脑麦克风</string>
     <string name="stream_waiting">连接电脑后，麦克风仍会保持关闭</string>
     <string name="stream_preparing">正在建立控制连接，麦克风尚未启用</string>
-    <string name="stream_ready">麦克风未启用，不占用录音设备</string>
-    <string name="stream_active">48 kHz · PCM16 · 单声道 · 正在回传</string>
+    <string name="stream_ready">电脑已连接，麦克风保持关闭</string>
+    <string name="stream_active">48 kHz · PCM16 · 单声道 · 正在发送</string>
     <string name="stream_stopped">回传已停止</string>
     <string name="enable_microphone">启用麦克风</string>
     <string name="disable_microphone">停止麦克风</string>

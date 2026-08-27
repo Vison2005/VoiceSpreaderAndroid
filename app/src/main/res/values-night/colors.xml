@@ -11,6 +11,5 @@
     <color name="text_secondary">#AACCD6</color>
     <color name="success">#59C88A</color>
     <color name="error">#FF8088</color>
-    <color name="warning">#E4B26A</color>
     <color name="icon_background">#102A57</color>
 </resources>

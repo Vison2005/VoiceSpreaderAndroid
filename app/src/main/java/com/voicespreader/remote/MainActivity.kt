@@ -33,6 +33,7 @@ import kotlin.math.roundToInt
 class MainActivity : AppCompatActivity() {
     private lateinit var pairingStatus: TextView
     private lateinit var streamStatus: TextView
+    private lateinit var playbackStatus: TextView
     private lateinit var connectionBadge: TextView
     private lateinit var levelText: TextView
     private lateinit var microphoneLevel: LinearProgressIndicator
@@ -113,6 +114,7 @@ class MainActivity : AppCompatActivity() {
 
         pairingStatus = findViewById(R.id.pairingStatus)
         streamStatus = findViewById(R.id.streamStatus)
+        playbackStatus = findViewById(R.id.playbackStatus)
         connectionBadge = findViewById(R.id.connectionBadge)
         levelText = findViewById(R.id.levelText)
         microphoneLevel = findViewById(R.id.microphoneLevel)
@@ -224,6 +226,7 @@ class MainActivity : AppCompatActivity() {
     private fun renderSnapshot(snapshot: MicrophoneStreamingService.Snapshot) {
         latestSnapshot = snapshot
         pairingStatus.text = snapshot.message
+        playbackStatus.text = snapshot.playbackDescription
         when (snapshot.state) {
             MicrophoneStreamingService.State.IDLE -> {
                 setConnectionBadge(
@@ -266,7 +269,7 @@ class MainActivity : AppCompatActivity() {
                 connectionBadge.isEnabled = true
                 connectionBadge.contentDescription = getString(R.string.disconnect_from_badge)
                 microphoneButton.isEnabled = true
-                renderMicrophoneButton(false)
+                renderMicrophoneButton(snapshot.microphoneActive)
                 updateLevel(-120.0, immediate = true)
             }
 
@@ -281,7 +284,7 @@ class MainActivity : AppCompatActivity() {
                 connectionBadge.isEnabled = true
                 connectionBadge.contentDescription = getString(R.string.disconnect_from_badge)
                 microphoneButton.isEnabled = true
-                renderMicrophoneButton(true)
+                renderMicrophoneButton(snapshot.microphoneActive)
                 updateLevel(snapshot.levelDbfs)
             }
 
@@ -304,7 +307,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun toggleMicrophone() {
         val service = streamingService ?: return
-        if (latestSnapshot.state == MicrophoneStreamingService.State.STREAMING) {
+        if (latestSnapshot.microphoneActive) {
             service.setMicrophoneEnabled(false)
             return
         }

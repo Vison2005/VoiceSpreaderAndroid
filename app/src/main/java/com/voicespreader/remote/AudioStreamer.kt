@@ -11,7 +11,7 @@ import android.media.MediaRecorder
 import android.os.Build
 import androidx.core.content.ContextCompat
 import java.io.DataOutputStream
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 import kotlin.math.log10
 import kotlin.math.sqrt
@@ -23,8 +23,10 @@ class AudioStreamer(private val context: Context) {
         private const val CLOCK_SAMPLE_INTERVAL_CHUNKS = 50
     }
 
-    private val running = AtomicBoolean(false)
+    private val generation = AtomicInteger()
+    @Volatile
     private var audioRecord: AudioRecord? = null
+    @Volatile
     private var worker: Thread? = null
 
     fun start(
@@ -33,18 +35,23 @@ class AudioStreamer(private val context: Context) {
         onLevel: (Double) -> Unit,
         onError: (String) -> Unit,
     ) {
-        if (running.getAndSet(true)) return
+        if (worker?.isAlive == true) return
+        val currentGeneration = generation.incrementAndGet()
         worker = thread(name = "VoiceSpreaderAudioCapture") {
+            var recorder: AudioRecord? = null
             runCatching {
-                val recorder = createAudioRecord()
-                audioRecord = recorder
-                if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+                val activeRecorder = createAudioRecord()
+                recorder = activeRecorder
+                if (activeRecorder.state != AudioRecord.STATE_INITIALIZED) {
                     error("手机麦克风无法按 48 kHz 初始化")
                 }
-                recorder.startRecording()
-                if (recorder.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                if (currentGeneration != generation.get()) return@runCatching
+                audioRecord = activeRecorder
+                activeRecorder.startRecording()
+                if (activeRecorder.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
                     error("手机系统没有提供麦克风数据")
                 }
+                if (currentGeneration != generation.get()) return@runCatching
                 onStarted()
 
                 val samples = ShortArray(CHUNK_FRAMES)
@@ -52,14 +59,15 @@ class AudioStreamer(private val context: Context) {
                 var levelCounter = 0
                 var clockSampleCounter = 0
                 val timestamp = AudioTimestamp()
-                while (running.get()) {
-                    val count = recorder.read(
+                while (currentGeneration == generation.get()) {
+                    val count = activeRecorder.read(
                         samples,
                         0,
                         samples.size,
                         AudioRecord.READ_BLOCKING,
                     )
                     if (count <= 0) error("读取麦克风失败：$count")
+                    if (currentGeneration != generation.get()) break
                     synchronized(output) {
                         output.writeInt(13 + count * 2)
                         output.writeByte(1)
@@ -76,7 +84,7 @@ class AudioStreamer(private val context: Context) {
 
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
                         && ++clockSampleCounter >= CLOCK_SAMPLE_INTERVAL_CHUNKS
-                        && recorder.getTimestamp(
+                        && activeRecorder.getTimestamp(
                             timestamp,
                             AudioTimestamp.TIMEBASE_MONOTONIC,
                         ) == AudioRecord.SUCCESS) {
@@ -103,18 +111,34 @@ class AudioStreamer(private val context: Context) {
                     }
                 }
             }.onFailure {
-                if (running.get()) onError(it.message ?: "麦克风回传已停止")
+                if (currentGeneration == generation.get()) {
+                    onError(it.message ?: "麦克风回传已停止")
+                }
             }
-            stopRecorder()
+            recorder?.let { currentRecorder ->
+                runCatching { currentRecorder.stop() }
+                runCatching { currentRecorder.release() }
+                if (audioRecord === currentRecorder) {
+                    audioRecord = null
+                }
+            }
+            if (worker === Thread.currentThread()) {
+                worker = null
+            }
         }
     }
 
     fun stop() {
-        running.set(false)
-        runCatching { audioRecord?.stop() }
-        worker?.join(1200)
-        worker = null
-        stopRecorder()
+        generation.incrementAndGet()
+        val currentRecorder = audioRecord
+        val currentWorker = worker
+        runCatching { currentRecorder?.stop() }
+        if (currentWorker !== Thread.currentThread()) {
+            runCatching { currentWorker?.join(1200) }
+        }
+        if (worker === currentWorker) worker = null
+        if (audioRecord === currentRecorder) audioRecord = null
+        runCatching { currentRecorder?.release() }
     }
 
     private fun createAudioRecord(): AudioRecord {
@@ -151,9 +175,4 @@ class AudioStreamer(private val context: Context) {
             .build()
     }
 
-    private fun stopRecorder() {
-        runCatching { audioRecord?.release() }
-        audioRecord = null
-        running.set(false)
-    }
 }
