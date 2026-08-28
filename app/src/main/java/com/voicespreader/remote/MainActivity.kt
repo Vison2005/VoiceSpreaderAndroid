@@ -85,7 +85,7 @@ class MainActivity : AppCompatActivity() {
             pairingStatus.setText(R.string.permission_microphone_required)
             return@registerForActivityResult
         }
-        streamingService?.setMicrophoneEnabled(true)
+        streamingService?.requestMicrophoneEnabled(true)
     }
 
     private val notificationPermissionLauncher = registerForActivityResult(
@@ -268,7 +268,7 @@ class MainActivity : AppCompatActivity() {
                 disconnectButton.isEnabled = true
                 connectionBadge.isEnabled = true
                 connectionBadge.contentDescription = getString(R.string.disconnect_from_badge)
-                microphoneButton.isEnabled = true
+                microphoneButton.isEnabled = !snapshot.microphoneRequestPending
                 renderMicrophoneButton(snapshot.microphoneActive)
                 updateLevel(-120.0, immediate = true)
             }
@@ -283,7 +283,7 @@ class MainActivity : AppCompatActivity() {
                 disconnectButton.isEnabled = true
                 connectionBadge.isEnabled = true
                 connectionBadge.contentDescription = getString(R.string.disconnect_from_badge)
-                microphoneButton.isEnabled = true
+                microphoneButton.isEnabled = !snapshot.microphoneRequestPending
                 renderMicrophoneButton(snapshot.microphoneActive)
                 updateLevel(snapshot.levelDbfs)
             }
@@ -308,12 +308,12 @@ class MainActivity : AppCompatActivity() {
     private fun toggleMicrophone() {
         val service = streamingService ?: return
         if (latestSnapshot.microphoneActive) {
-            service.setMicrophoneEnabled(false)
+            service.requestMicrophoneEnabled(false)
             return
         }
         if (latestSnapshot.state != MicrophoneStreamingService.State.CONNECTED) return
         if (hasPermission(Manifest.permission.RECORD_AUDIO)) {
-            service.setMicrophoneEnabled(true)
+            service.requestMicrophoneEnabled(true)
         } else {
             microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
