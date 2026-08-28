@@ -11,7 +11,7 @@ android {
         applicationId = "com.voicespreader.remote"
         minSdk = 23
         targetSdk = 36
-        versionCode = 10202
+        versionCode = 10203
         versionName = "1.2.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

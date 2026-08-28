@@ -29,7 +29,7 @@ class PairingClient {
     fun connect(
         info: PairingInfo,
         deviceId: String,
-        onConnected: (DataOutputStream, Boolean) -> Unit,
+        onConnected: (DataOutputStream) -> Unit,
         onMicrophoneCommand: (Boolean) -> Unit,
         onPlaybackCommand: (Boolean) -> Unit,
         onPlaybackFrame: (RemoteAudioFrame) -> Unit,
@@ -74,7 +74,7 @@ class PairingClient {
                 if (response.optInt("protocol", 0) < 2) {
                     error("电脑端版本过旧，不支持当前设备互联协议")
                 }
-                onConnected(output, response.optBoolean("microphoneRequests", false))
+                onConnected(output)
 
                 val framedInput = DataInputStream(input)
                 while (generation == synchronized(connectionLock) { connectionGeneration }) {

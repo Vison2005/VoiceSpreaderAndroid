@@ -96,7 +96,6 @@ class MicrophoneStreamingService : Service() {
     @Volatile
     private var playbackRequested = false
     private var streamOutput: DataOutputStream? = null
-    private var hostControlsMicrophone = false
     private var connectedPairing: PairingInfo? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -161,7 +160,6 @@ class MicrophoneStreamingService : Service() {
         sendMicrophoneState(false)
         sendPlaybackState(false)
         streamOutput = null
-        hostControlsMicrophone = false
         connectedPairing = null
         client.disconnect()
         releaseConnectionLocks()
@@ -181,7 +179,6 @@ class MicrophoneStreamingService : Service() {
         playbackRequested = false
         releaseConnectionLocks()
         streamOutput = null
-        hostControlsMicrophone = false
         connectedPairing = null
         client.disconnect()
         publish(Snapshot(State.CONNECTING, "正在连接 ${pairing.host}:${pairing.port}…"))
@@ -189,10 +186,10 @@ class MicrophoneStreamingService : Service() {
         client.connect(
             pairing,
             stableDeviceId(),
-            onConnected = { output, microphoneRequests ->
+            onConnected = { output ->
                 mainHandler.post {
                     if (generation == connectionGeneration) {
-                        beginConnected(output, pairing, microphoneRequests)
+                        beginConnected(output, pairing)
                     }
                 }
             },
@@ -254,18 +251,13 @@ class MicrophoneStreamingService : Service() {
         )
     }
 
-    private fun beginConnected(
-        output: DataOutputStream,
-        pairing: PairingInfo,
-        microphoneRequests: Boolean,
-    ) {
+    private fun beginConnected(output: DataOutputStream, pairing: PairingInfo) {
         ++microphoneGeneration
         ++microphoneRequestGeneration
         pendingMicrophoneEnabled = null
         microphoneRequested = false
         playbackRequested = false
         streamOutput = output
-        hostControlsMicrophone = microphoneRequests
         connectedPairing = pairing
         publish(
             Snapshot(
@@ -280,10 +272,6 @@ class MicrophoneStreamingService : Service() {
 
     fun requestMicrophoneEnabled(enabled: Boolean) {
         if (streamOutput == null) return
-        if (!hostControlsMicrophone) {
-            setMicrophoneEnabled(enabled)
-            return
-        }
         if (snapshot.microphoneRequestPending) return
 
         val requestGeneration = ++microphoneRequestGeneration
@@ -606,7 +594,6 @@ class MicrophoneStreamingService : Service() {
         microphoneRequested = false
         playbackRequested = false
         streamOutput = null
-        hostControlsMicrophone = false
         connectedPairing = null
         client.disconnect()
         releaseConnectionLocks()
@@ -754,7 +741,6 @@ class MicrophoneStreamingService : Service() {
         microphoneRequested = false
         playbackRequested = false
         streamOutput = null
-        hostControlsMicrophone = false
         connectedPairing = null
         client.close()
         discovery.close()
