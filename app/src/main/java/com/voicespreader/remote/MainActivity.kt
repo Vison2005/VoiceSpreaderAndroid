@@ -344,7 +344,6 @@ class MainActivity : AppCompatActivity() {
                 if (enabled) android.R.color.white else R.color.accent,
             ),
         )
-        microphoneButton.isChecked = enabled
     }
 
     private fun updateLevel(dbfs: Double, immediate: Boolean = false) {

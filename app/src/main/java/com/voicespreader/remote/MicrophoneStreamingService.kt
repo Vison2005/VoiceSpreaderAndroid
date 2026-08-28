@@ -317,6 +317,25 @@ class MicrophoneStreamingService : Service() {
         ++microphoneRequestGeneration
         val phoneRequest = pendingMicrophoneEnabled
         pendingMicrophoneEnabled = null
+        if (!enabled) {
+            microphoneRequested = false
+            ++microphoneGeneration
+            streamer.stop()
+            updateConnectionLocks()
+            sendMicrophoneState(false)
+            val endpoint = connectedPairing
+            publish(
+                Snapshot(
+                    state = State.CONNECTED,
+                    message = endpoint?.let { "已连接 ${it.host}:${it.port}" } ?: "已连接电脑",
+                    microphoneRequestPending = false,
+                    playbackActive = snapshot.playbackActive,
+                    playbackDescription = snapshot.playbackDescription,
+                ),
+            )
+            updateConnectedNotification()
+            return
+        }
         if (microphoneRequested == enabled) {
             // 重复命令也必须回报实际状态，用于恢复丢失的启停确认。
             sendMicrophoneState(snapshot.microphoneActive)
@@ -338,24 +357,6 @@ class MicrophoneStreamingService : Service() {
         microphoneRequested = enabled
 
         val generation = ++microphoneGeneration
-        if (!enabled) {
-            streamer.stop()
-            updateConnectionLocks()
-            sendMicrophoneState(false)
-            val endpoint = connectedPairing
-            publish(
-                Snapshot(
-                    state = State.CONNECTED,
-                    message = endpoint?.let { "已连接 ${it.host}:${it.port}" } ?: "已连接电脑",
-                    microphoneRequestPending = false,
-                    playbackActive = snapshot.playbackActive,
-                    playbackDescription = snapshot.playbackDescription,
-                ),
-            )
-            updateConnectedNotification()
-            return
-        }
-
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED
         ) {
