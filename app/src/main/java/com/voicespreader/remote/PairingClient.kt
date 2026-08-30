@@ -62,6 +62,7 @@ class PairingClient {
                     .put("secret", info.secret)
                     .put("deviceId", deviceId)
                     .put("deviceName", "${Build.MANUFACTURER} ${Build.MODEL}")
+                    .put("microphoneRequests", true)
                     .toString() + "\n"
                 output.write(hello.toByteArray(Charsets.UTF_8))
                 output.flush()
