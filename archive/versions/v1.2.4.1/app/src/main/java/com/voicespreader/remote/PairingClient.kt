@@ -46,7 +46,6 @@ class PairingClient {
             runCatching {
                 val connection = Socket()
                 connection.tcpNoDelay = true
-                connection.keepAlive = true
                 connection.connect(InetSocketAddress(info.host, info.port), 4000)
                 synchronized(connectionLock) {
                     if (generation != connectionGeneration) {
@@ -66,10 +65,6 @@ class PairingClient {
                     .put("deviceName", "${Build.MANUFACTURER} ${Build.MODEL}")
                     .put("microphoneRequests", true)
                     .put("microphoneSyncRevision", true)
-                    // 触摸板与音频共用已认证长连接；能力声明让 protocol 3 服务端
-                    // 可以按标准 capability 路径处理，旧 protocol 2 服务端仍兼容。
-                    // 音频连接只声明音频能力；触摸板使用独立 protocol 3 控制连接。
-                    .put("capabilities", org.json.JSONArray(listOf("audio")))
                     .toString() + "\n"
                 output.write(hello.toByteArray(Charsets.UTF_8))
                 output.flush()

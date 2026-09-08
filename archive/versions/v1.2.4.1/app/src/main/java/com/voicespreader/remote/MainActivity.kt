@@ -307,8 +307,7 @@ class MainActivity : AppCompatActivity() {
                 disconnectButton.isEnabled = true
                 connectionBadge.isEnabled = true
                 connectionBadge.contentDescription = getString(R.string.disconnect_from_badge)
-                // 启动等待期间仍允许点击，以便立即取消卡住的录音请求。
-                microphoneButton.isEnabled = true
+                microphoneButton.isEnabled = !snapshot.microphoneRequestPending
                 renderMicrophoneButton(snapshot.microphoneActive)
                 updateLevel(-120.0, immediate = true)
             }
@@ -323,8 +322,7 @@ class MainActivity : AppCompatActivity() {
                 disconnectButton.isEnabled = true
                 connectionBadge.isEnabled = true
                 connectionBadge.contentDescription = getString(R.string.disconnect_from_badge)
-                // 启动等待期间仍允许点击，以便立即取消卡住的录音请求。
-                microphoneButton.isEnabled = true
+                microphoneButton.isEnabled = !snapshot.microphoneRequestPending
                 renderMicrophoneButton(snapshot.microphoneActive)
                 updateLevel(snapshot.levelDbfs)
             }
@@ -348,10 +346,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun toggleMicrophone() {
         val service = streamingService ?: return
-        if (latestSnapshot.microphoneRequestPending) {
-            service.requestMicrophoneEnabled(false)
-            return
-        }
+        if (latestSnapshot.microphoneRequestPending) return
         if (latestSnapshot.microphoneActive) {
             service.requestMicrophoneEnabled(false)
             return

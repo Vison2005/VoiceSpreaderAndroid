@@ -70,7 +70,6 @@ class MicrophoneStreamingService : Service() {
         private const val CHANNEL_ID = "microphone_streaming"
         private const val NOTIFICATION_ID = 4107
         private const val MICROPHONE_REQUEST_TIMEOUT_MILLISECONDS = 6_000L
-        private const val WINDOWS_MICROPHONE_START_TIMEOUT_MILLISECONDS = 8_000L
         private const val RECONNECT_PORT = 39742
         private const val RECONNECT_PACKET_BYTES = 160
         internal const val SERVICE_PREFERENCES = "streaming_service_state"
@@ -138,7 +137,6 @@ class MicrophoneStreamingService : Service() {
     private lateinit var remotePlayer: RemoteAudioPlayer
     private lateinit var savedPairingStore: SavedPairingStore
     private var listener: Listener? = null
-    @Volatile
     private var snapshot = Snapshot()
     private var connectionGeneration = 0
     @Volatile
@@ -148,17 +146,12 @@ class MicrophoneStreamingService : Service() {
     private var pendingMicrophoneEnabled: Boolean? = null
     private var pendingMicrophoneRequestId = 0L
     private var lastMicrophoneCommandId = 0L
-    /** Windows 最近一次启停命令的确认编号；录音真正启动后才回传确认。 */
-    @Volatile
-    private var pendingWindowsCommandId = 0L
     // 所有来自手机界面的启停操作都要等到上一条请求完成，避免双击产生交错指令。
     private var microphoneActionInFlight = false
-    private var queuedMicrophoneEnabled: Boolean? = null
     @Volatile
     private var microphoneRequested = false
     @Volatile
     private var playbackRequested = false
-    @Volatile
     private var streamOutput: DataOutputStream? = null
     private var connectedPairing: PairingInfo? = null
     private var reconnectTarget: PairingInfo? = null
@@ -260,9 +253,7 @@ class MicrophoneStreamingService : Service() {
         pendingMicrophoneEnabled = null
         pendingMicrophoneRequestId = 0L
         lastMicrophoneCommandId = 0L
-        pendingWindowsCommandId = 0L
         microphoneActionInFlight = false
-        queuedMicrophoneEnabled = null
         streamer.stop()
         remotePlayer.stop()
         microphoneRequested = false
@@ -291,13 +282,7 @@ class MicrophoneStreamingService : Service() {
         allowLocateFallback: Boolean,
         keepAliveOnFailure: Boolean = false,
     ) {
-        // 音频重连不应顺带销毁仍健康的触摸板连接。只有切换到另一台电脑、
-        // 会话凭据或端口发生变化时才清理功能通道，避免音频退避重连放大成触摸板重连风暴。
-        val sameFeatureEndpoint = FeatureSessionRegistry.pairing == pairing
-            && FeatureSessionRegistry.deviceId == stableDeviceId()
-        if (!sameFeatureEndpoint) {
-            FeatureSessionRegistry.clear()
-        }
+        FeatureSessionRegistry.clear()
         persistActivePairing(pairing)
         // 切换到另一台已保存电脑前先发送明确的断开帧，旧电脑不会把主动切换误判为网络故障并广播重连。
         if (streamOutput != null) {
@@ -309,9 +294,7 @@ class MicrophoneStreamingService : Service() {
         pendingMicrophoneEnabled = null
         pendingMicrophoneRequestId = 0L
         lastMicrophoneCommandId = 0L
-        pendingWindowsCommandId = 0L
         microphoneActionInFlight = false
-        queuedMicrophoneEnabled = null
         streamer.stop()
         remotePlayer.stop()
         microphoneRequested = false
@@ -424,20 +407,19 @@ class MicrophoneStreamingService : Service() {
         pendingMicrophoneEnabled = null
         pendingMicrophoneRequestId = 0L
         lastMicrophoneCommandId = 0L
-        pendingWindowsCommandId = 0L
         microphoneActionInFlight = false
-        queuedMicrophoneEnabled = null
         microphoneRequested = false
         playbackRequested = false
         streamOutput = output
         connectedPairing = pairing
         reconnectTarget = pairing
-        persistActivePairing(pairing)
-        // 触摸板使用独立的 protocol 3 控制通道，避免高频输入和 PCM 音频争用同一条 TCP 流。
-        // 音频重连完成后立即恢复功能通道，避免触摸板页面需要再次点击才能重连。
         FeatureSessionRegistry.pairing = pairing
         FeatureSessionRegistry.deviceId = stableDeviceId()
-        FeatureSessionRegistry.ensureConnected(applicationContext)
+        FeatureSessionRegistry.onFrame = { type, payload ->
+            mainHandler.post { handleFeatureFrame(type, payload) }
+        }
+        FeatureSessionRegistry.ensureConnected(this)
+        persistActivePairing(pairing)
         connectionWasEstablished = true
         waitingForReconnect = false
         publish(
@@ -454,22 +436,7 @@ class MicrophoneStreamingService : Service() {
 
     fun requestMicrophoneEnabled(enabled: Boolean) {
         if (streamOutput == null) return
-        if (microphoneActionInFlight || snapshot.microphoneRequestPending) {
-            // 停止是更高优先级的最终状态，必须能打断尚未完成的启动请求，
-            // 否则手机界面会一直等确认，Windows 端也可能继续保留旧的启动命令。
-            if (!enabled) {
-                queuedMicrophoneEnabled = null
-                microphoneActionInFlight = false
-                pendingMicrophoneEnabled = null
-                pendingMicrophoneRequestId = 0L
-                ++microphoneRequestGeneration
-                microphoneRequested = false
-                requestMicrophoneEnabled(false)
-            } else {
-                queuedMicrophoneEnabled = true
-            }
-            return
-        }
+        if (microphoneActionInFlight || snapshot.microphoneRequestPending) return
 
         val requestGeneration = ++microphoneRequestGeneration
         val requestId = ++microphoneRequestId
@@ -509,23 +476,6 @@ class MicrophoneStreamingService : Service() {
             return
         }
 
-        if (!enabled) {
-            // 停止请求在手机本地已经完成，Windows 收到 type 2/7 后只需收敛路由，
-            // 不再让手机界面无意义地等待 6 秒确认超时。
-            microphoneActionInFlight = false
-            pendingMicrophoneEnabled = null
-            pendingMicrophoneRequestId = 0L
-            publish(snapshot.copy(
-                state = State.CONNECTED,
-                message = "手机麦克风已停止",
-                microphoneActive = false,
-                microphoneRequestPending = false,
-            ))
-            updateConnectedNotification()
-            drainQueuedMicrophoneRequest()
-            return
-        }
-
         mainHandler.postDelayed(
             {
                 if (requestGeneration == microphoneRequestGeneration
@@ -540,65 +490,10 @@ class MicrophoneStreamingService : Service() {
                             microphoneRequestPending = false,
                         ),
                     )
-                    drainQueuedMicrophoneRequest()
                 }
             },
             MICROPHONE_REQUEST_TIMEOUT_MILLISECONDS,
         )
-    }
-
-    private fun drainQueuedMicrophoneRequest() {
-        val queued = queuedMicrophoneEnabled ?: return
-        if (microphoneActionInFlight || snapshot.microphoneRequestPending) return
-        queuedMicrophoneEnabled = null
-        if (queued != microphoneRequested || queued != snapshot.microphoneActive) {
-            requestMicrophoneEnabled(queued)
-        }
-    }
-
-    /** 当前是否存在可写入的、已经完成认证的音频 TCP 会话。 */
-    fun isTouchpadReady(): Boolean = streamOutput != null && connectedPairing != null && (
-        snapshot.state == State.CONNECTED || snapshot.state == State.STREAMING
-    )
-
-    /**
-     * 触摸板沿用已经认证的音频 TCP 长连接发送输入帧。
-     * 单帧写失败时主动进入统一重连流程，避免下一次触摸继续写入已失效的 socket。
-     */
-    fun sendTouchpadPointer(value: ProtocolV3.PointerPayload): Boolean =
-        sendTouchpadFrame(ProtocolV3.TYPE_INPUT_POINTER, ProtocolV3.encodePointer(value))
-
-    fun sendTouchpadButton(value: ProtocolV3.ButtonPayload): Boolean =
-        sendTouchpadFrame(ProtocolV3.TYPE_INPUT_BUTTON, ProtocolV3.encodeButton(value))
-
-    fun sendTouchpadScroll(value: ProtocolV3.ScrollPayload): Boolean =
-        sendTouchpadFrame(ProtocolV3.TYPE_INPUT_SCROLL, ProtocolV3.encodeScroll(value))
-
-    fun sendTouchpadZoom(value: ProtocolV3.ZoomPayload): Boolean =
-        sendTouchpadFrame(ProtocolV3.TYPE_INPUT_ZOOM, ProtocolV3.encodeZoom(value))
-
-    private fun sendTouchpadFrame(type: Int, payload: ByteArray): Boolean {
-        val output = streamOutput ?: return false
-        val sent = runCatching {
-            synchronized(output) {
-                output.writeInt(payload.size + 1)
-                output.writeByte(type)
-                output.write(payload)
-                output.flush()
-            }
-        }.isSuccess
-        if (!sent) {
-            val endpoint = connectedPairing
-            if (endpoint != null && streamOutput === output) {
-                // 统一释放旧会话并交给已有的局域网重连机制；不在触摸回调线程阻塞重连。
-                mainHandler.post {
-                    if (streamOutput === output) {
-                        enterReconnectWait(endpoint, "触摸板连接已断开")
-                    }
-                }
-            }
-        }
-        return sent
     }
 
     fun setMicrophoneEnabled(enabled: Boolean, commandId: Long = 0L) {
@@ -610,9 +505,6 @@ class MicrophoneStreamingService : Service() {
         }
         if (commandId > 0L) {
             lastMicrophoneCommandId = commandId
-            if (enabled) {
-                pendingWindowsCommandId = commandId
-            }
         }
         ++microphoneRequestGeneration
         val phoneRequest = pendingMicrophoneEnabled
@@ -621,7 +513,6 @@ class MicrophoneStreamingService : Service() {
         if (!enabled) {
             microphoneActionInFlight = false
             microphoneRequested = false
-            pendingWindowsCommandId = 0L
             ++microphoneGeneration
             streamer.stop()
             updateConnectionLocks()
@@ -642,13 +533,6 @@ class MicrophoneStreamingService : Service() {
         }
         if (microphoneRequested == enabled) {
             microphoneActionInFlight = false
-            if (enabled && !snapshot.microphoneActive) {
-                publish(snapshot.copy(
-                    message = "正在启用手机麦克风…",
-                    microphoneRequestPending = true,
-                ))
-                return
-            }
             // 重复命令也必须回报实际状态，用于恢复丢失的启停确认。
             sendMicrophoneState(snapshot.microphoneActive, commandId)
             val endpoint = connectedPairing
@@ -723,13 +607,9 @@ class MicrophoneStreamingService : Service() {
             output,
             onStarted = {
                 if (generation == microphoneGeneration) {
-                    val confirmationId = pendingWindowsCommandId.takeIf { it > 0L } ?: commandId
-                    sendMicrophoneState(true, confirmationId)
+                    sendMicrophoneState(true, commandId)
                     mainHandler.post {
                         if (generation == microphoneGeneration && streamOutput === output) {
-                            if (pendingWindowsCommandId == confirmationId) {
-                                pendingWindowsCommandId = 0L
-                            }
                             microphoneActionInFlight = false
                             publish(
                                 Snapshot(
@@ -743,7 +623,6 @@ class MicrophoneStreamingService : Service() {
                                 ),
                             )
                             updateConnectedNotification()
-                            drainQueuedMicrophoneRequest()
                         }
                     }
                 }
@@ -765,9 +644,7 @@ class MicrophoneStreamingService : Service() {
                         microphoneActionInFlight = false
                         streamer.stop()
                         updateConnectionLocks()
-                        val failureCommandId = pendingWindowsCommandId.takeIf { it > 0L } ?: commandId
-                        pendingWindowsCommandId = 0L
-                        sendMicrophoneState(false, failureCommandId)
+                        sendMicrophoneState(false, commandId)
                         sendControlError("回传失败：$message")
                         publish(
                             Snapshot(
@@ -779,39 +656,10 @@ class MicrophoneStreamingService : Service() {
                             ),
                         )
                         updateConnectedNotification()
-                        drainQueuedMicrophoneRequest()
                     }
                 }
             },
         )
-        // AudioRecord 在个别 ROM 上可能卡在初始化或首帧读取；不能让 Windows 永久等待确认。
-        mainHandler.postDelayed({
-            if (generation == microphoneGeneration
-                && microphoneRequested
-                && !snapshot.microphoneActive
-                && snapshot.microphoneRequestPending
-            ) {
-                ++microphoneGeneration
-                microphoneRequested = false
-                microphoneActionInFlight = false
-                streamer.stop()
-                updateConnectionLocks()
-                val timeoutCommandId = pendingWindowsCommandId.takeIf { it > 0L } ?: commandId
-                pendingWindowsCommandId = 0L
-                sendMicrophoneState(false, timeoutCommandId)
-                sendControlError("麦克风启动超时，请检查系统录音权限")
-                publish(
-                    snapshot.copy(
-                        state = State.CONNECTED,
-                        message = "麦克风启动超时，请重试",
-                        microphoneActive = false,
-                        microphoneRequestPending = false,
-                    ),
-                )
-                updateConnectedNotification()
-                drainQueuedMicrophoneRequest()
-            }
-        }, WINDOWS_MICROPHONE_START_TIMEOUT_MILLISECONDS)
     }
 
     private fun setPlaybackEnabled(enabled: Boolean) {
@@ -977,10 +825,7 @@ class MicrophoneStreamingService : Service() {
         ++microphoneGeneration
         ++microphoneRequestGeneration
         pendingMicrophoneEnabled = null
-        pendingMicrophoneRequestId = 0L
-        pendingWindowsCommandId = 0L
         microphoneActionInFlight = false
-        queuedMicrophoneEnabled = null
         streamer.stop()
         remotePlayer.stop()
         microphoneRequested = false
@@ -1008,9 +853,7 @@ class MicrophoneStreamingService : Service() {
         pendingMicrophoneEnabled = null
         pendingMicrophoneRequestId = 0L
         lastMicrophoneCommandId = 0L
-        pendingWindowsCommandId = 0L
         microphoneActionInFlight = false
-        queuedMicrophoneEnabled = null
         streamer.stop()
         remotePlayer.stop()
         microphoneRequested = false
@@ -1303,10 +1146,7 @@ class MicrophoneStreamingService : Service() {
         ++microphoneGeneration
         ++microphoneRequestGeneration
         pendingMicrophoneEnabled = null
-        pendingMicrophoneRequestId = 0L
-        pendingWindowsCommandId = 0L
         microphoneActionInFlight = false
-        queuedMicrophoneEnabled = null
         streamer.stop()
         remotePlayer.stop()
         microphoneRequested = false
