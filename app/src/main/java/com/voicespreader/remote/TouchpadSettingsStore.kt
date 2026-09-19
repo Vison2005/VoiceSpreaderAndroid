@@ -11,6 +11,7 @@ data class TouchpadSettings(
     val twoFingerTapEnabled: Boolean = true,
     val twoFingerScrollEnabled: Boolean = true,
     val pinchZoomEnabled: Boolean = true,
+    val gestureActions: Map<String, String> = TouchpadActionCatalog.defaultBindings(),
 )
 
 class TouchpadSettingsStore(context: Context) {
@@ -23,6 +24,12 @@ class TouchpadSettingsStore(context: Context) {
         twoFingerTapEnabled = preferences.getBoolean(KEY_TWO_FINGER_TAP, true),
         twoFingerScrollEnabled = preferences.getBoolean(KEY_TWO_FINGER_SCROLL, true),
         pinchZoomEnabled = preferences.getBoolean(KEY_PINCH_ZOOM, true),
+        gestureActions = TouchpadGesture.entries.associate { gesture ->
+            gesture.id to preferences.getString(
+                gesturePreferenceKey(gesture),
+                TouchpadActionCatalog.defaultBindings()[gesture.id] ?: TouchpadActionCatalog.NONE,
+            ).orEmpty()
+        },
     )
 
     fun set(settings: TouchpadSettings) {
@@ -33,6 +40,11 @@ class TouchpadSettingsStore(context: Context) {
             putBoolean(KEY_TWO_FINGER_TAP, settings.twoFingerTapEnabled)
             putBoolean(KEY_TWO_FINGER_SCROLL, settings.twoFingerScrollEnabled)
             putBoolean(KEY_PINCH_ZOOM, settings.pinchZoomEnabled)
+            settings.gestureActions.forEach { (gestureId, actionId) ->
+                if (gestureId.isNotBlank() && actionId.isNotBlank()) {
+                    putString("$KEY_GESTURE_PREFIX$gestureId", actionId)
+                }
+            }
         }
     }
 
@@ -43,5 +55,9 @@ class TouchpadSettingsStore(context: Context) {
         const val KEY_TWO_FINGER_TAP = "two_finger_tap"
         const val KEY_TWO_FINGER_SCROLL = "two_finger_scroll"
         const val KEY_PINCH_ZOOM = "pinch_zoom"
+        const val KEY_GESTURE_PREFIX = "gesture_"
+
+        fun gesturePreferenceKey(gesture: TouchpadGesture): String =
+            "$KEY_GESTURE_PREFIX${gesture.id}"
     }
 }

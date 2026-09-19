@@ -19,6 +19,7 @@ class TouchpadView @JvmOverloads constructor(
     var onButton: (ProtocolV3.ButtonPayload) -> Unit = {}
     var onScroll: (ProtocolV3.ScrollPayload) -> Unit = {}
     var onZoom: (ProtocolV3.ZoomPayload) -> Unit = {}
+    var onGestureAction: (String) -> Unit = {}
 
     var sensitivity: Float = 1f
     var singleTapEnabled: Boolean = true
@@ -26,6 +27,7 @@ class TouchpadView @JvmOverloads constructor(
     var twoFingerTapEnabled: Boolean = true
     var twoFingerScrollEnabled: Boolean = true
     var pinchZoomEnabled: Boolean = true
+    private var gestureActions: Map<String, String> = TouchpadActionCatalog.defaultBindings()
 
     private var sequence = 0
     private var activePointerId = MotionEvent.INVALID_POINTER_ID
@@ -47,6 +49,16 @@ class TouchpadView @JvmOverloads constructor(
     private var lastPinchDistance = 0f
     private var pinchActive = false
     private var twoFingerGestureMode = TWO_FINGER_GESTURE_UNDECIDED
+    private var multiFingerCount = 0
+    private var multiFingerDownAt = 0L
+    private var multiFingerDownX = 0f
+    private var multiFingerDownY = 0f
+    private var multiFingerLastX = 0f
+    private var multiFingerLastY = 0f
+    private var multiFingerMoved = false
+    private var multiFingerDirection = MULTI_DIRECTION_UNDECIDED
+    private var pendingMultiTap: PendingMultiTap? = null
+    private var pendingMultiTapRunnable: Runnable? = null
     private var fileDragActive = false
     private var themeMode = ThemeMode.DARK
 
@@ -89,6 +101,7 @@ class TouchpadView @JvmOverloads constructor(
         twoFingerTapEnabled = settings.twoFingerTapEnabled
         twoFingerScrollEnabled = settings.twoFingerScrollEnabled
         pinchZoomEnabled = settings.pinchZoomEnabled
+        gestureActions = settings.gestureActions
     }
 
     fun currentSettings(): TouchpadSettings = TouchpadSettings(
@@ -98,7 +111,23 @@ class TouchpadView @JvmOverloads constructor(
         twoFingerTapEnabled,
         twoFingerScrollEnabled,
         pinchZoomEnabled,
+        gestureActions,
     )
+
+    fun triggerButtonClick(button: Int, count: Int = 1) {
+        repeat(count.coerceIn(1, 3)) {
+            emitButton(button, true)
+            emitButton(button, false)
+        }
+    }
+
+    fun triggerScroll(deltaX: Float, deltaY: Float) {
+        emitScroll(deltaX, deltaY)
+    }
+
+    fun triggerZoom(delta: Float) {
+        emitZoom(delta)
+    }
 
     fun setFileDragActive(active: Boolean) {
         if (fileDragActive == active) return
@@ -117,7 +146,7 @@ class TouchpadView @JvmOverloads constructor(
         if (fileDragActive) return true
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> beginPointer(event)
-            MotionEvent.ACTION_POINTER_DOWN -> beginTwoFinger(event)
+            MotionEvent.ACTION_POINTER_DOWN -> beginAdditionalPointer(event)
             MotionEvent.ACTION_MOVE -> movePointer(event)
             MotionEvent.ACTION_POINTER_UP -> Unit
             MotionEvent.ACTION_UP -> endPointer(event)
@@ -148,7 +177,7 @@ class TouchpadView @JvmOverloads constructor(
     }
 
     private fun beginTwoFinger(event: MotionEvent) {
-        if (event.pointerCount < 2 || twoFingerMode) return
+        if (event.pointerCount < 2 || twoFingerMode || multiFingerCount > 0) return
         twoFingerMode = true
         twoFingerTapCandidate = true
         twoFingerMoved = false
@@ -165,11 +194,64 @@ class TouchpadView @JvmOverloads constructor(
             leftButtonDown = false
         }
         emitPointer(ProtocolV3.PointerAction.CANCEL, activePointerId, 0f, 0f)
+        activePointerId = MotionEvent.INVALID_POINTER_ID
         lastX = twoFingerDownX
         lastY = twoFingerDownY
     }
 
+    private fun beginAdditionalPointer(event: MotionEvent) {
+        when {
+            event.pointerCount == 2 -> beginTwoFinger(event)
+            event.pointerCount >= 3 -> beginMultiFinger(event)
+        }
+    }
+
+    private fun beginMultiFinger(event: MotionEvent) {
+        if (event.pointerCount > 4) {
+            multiFingerCount = MULTI_FINGER_UNSUPPORTED
+            return
+        }
+
+        val now = SystemClock.elapsedRealtime()
+        val (centerX, centerY) = centroid(event)
+        if (multiFingerCount == 0) {
+            multiFingerCount = event.pointerCount
+            multiFingerDownAt = now
+            multiFingerDownX = centerX
+            multiFingerDownY = centerY
+            multiFingerMoved = false
+            multiFingerDirection = MULTI_DIRECTION_UNDECIDED
+            multiFingerLastX = centerX
+            multiFingerLastY = centerY
+            removeCallbacks(longPressRunnable)
+            if (leftButtonDown) {
+                emitButton(1, false)
+                leftButtonDown = false
+            }
+            if (activePointerId != MotionEvent.INVALID_POINTER_ID) {
+                emitPointer(ProtocolV3.PointerAction.CANCEL, activePointerId, 0f, 0f)
+            }
+            activePointerId = MotionEvent.INVALID_POINTER_ID
+            twoFingerMode = false
+            return
+        }
+
+        // 在三指尚未移动时允许第四根手指加入，并以四指作为本次手势的目标数量。
+        if (multiFingerCount == 3 && event.pointerCount == 4 && !multiFingerMoved) {
+            multiFingerCount = 4
+            multiFingerDownAt = now
+            multiFingerDownX = centerX
+            multiFingerDownY = centerY
+            multiFingerLastX = centerX
+            multiFingerLastY = centerY
+        }
+    }
+
     private fun movePointer(event: MotionEvent) {
+        if (multiFingerCount != 0) {
+            if (multiFingerCount > 0) moveMultiFinger(event)
+            return
+        }
         if (twoFingerMode) {
             if (event.pointerCount < 2) return
             val x = (event.getX(0) + event.getX(1)) / 2f
@@ -234,6 +316,26 @@ class TouchpadView @JvmOverloads constructor(
         processSinglePointerPosition(event.getX(index), event.getY(index))
     }
 
+    private fun moveMultiFinger(event: MotionEvent) {
+        if (event.pointerCount < 3 || event.pointerCount > 4 || multiFingerCount == 0) return
+        val (centerX, centerY) = centroid(event)
+        val totalX = centerX - multiFingerDownX
+        val totalY = centerY - multiFingerDownY
+        val distance = hypot(totalX, totalY)
+        if (distance >= multiFingerSwipeSlop()) {
+            multiFingerMoved = true
+            if (multiFingerDirection == MULTI_DIRECTION_UNDECIDED) {
+                multiFingerDirection = if (abs(totalX) >= abs(totalY)) {
+                    if (totalX >= 0f) MULTI_DIRECTION_RIGHT else MULTI_DIRECTION_LEFT
+                } else {
+                    if (totalY >= 0f) MULTI_DIRECTION_DOWN else MULTI_DIRECTION_UP
+                }
+            }
+        }
+        multiFingerLastX = centerX
+        multiFingerLastY = centerY
+    }
+
     private fun processSinglePointerPosition(x: Float, y: Float) {
         val dx = x - lastX
         val dy = y - lastY
@@ -248,6 +350,11 @@ class TouchpadView @JvmOverloads constructor(
 
     private fun endPointer(event: MotionEvent) {
         removeCallbacks(longPressRunnable)
+        if (multiFingerCount != 0) {
+            if (multiFingerCount > 0) endMultiFinger()
+            resetPointer()
+            return
+        }
         if (twoFingerMode) {
             if (twoFingerTapEnabled
                 && twoFingerTapCandidate
@@ -273,6 +380,93 @@ class TouchpadView @JvmOverloads constructor(
             emitButton(1, false)
         }
         resetPointer()
+    }
+
+    private fun endMultiFinger() {
+        val fingerCount = multiFingerCount
+        if (multiFingerMoved) {
+            val gesture = gestureForSwipe(fingerCount, multiFingerDirection)
+            emitGestureAction(gesture)
+            return
+        }
+
+        if (SystemClock.elapsedRealtime() - multiFingerDownAt >= MULTI_FINGER_TAP_MILLISECONDS) {
+            return
+        }
+        handleMultiFingerTap(fingerCount)
+    }
+
+    private fun handleMultiFingerTap(fingerCount: Int) {
+        val now = SystemClock.elapsedRealtime()
+        val doubleGesture = gestureForTap(fingerCount, doubleTap = true)
+        val singleGesture = gestureForTap(fingerCount, doubleTap = false)
+        val doubleAction = doubleGesture?.let { gestureActions[it.id] }
+            .orEmpty()
+            .ifBlank { TouchpadActionCatalog.NONE }
+
+        val previous = pendingMultiTap
+        if (doubleAction != TouchpadActionCatalog.NONE
+            && previous != null
+            && previous.fingerCount == fingerCount
+            && now - previous.at <= MULTI_FINGER_DOUBLE_TAP_MILLISECONDS
+        ) {
+            pendingMultiTapRunnable?.let(::removeCallbacks)
+            pendingMultiTapRunnable = null
+            pendingMultiTap = null
+            emitGestureAction(doubleGesture)
+            return
+        }
+
+        if (previous != null && previous.fingerCount != fingerCount) {
+            pendingMultiTapRunnable?.let(::removeCallbacks)
+            pendingMultiTapRunnable = null
+            pendingMultiTap = null
+        }
+
+        if (doubleAction == TouchpadActionCatalog.NONE) {
+            emitGestureAction(singleGesture)
+            return
+        }
+
+        val pending = PendingMultiTap(fingerCount, now)
+        pendingMultiTap = pending
+        val runnable = Runnable {
+            if (pendingMultiTap == pending) {
+                pendingMultiTap = null
+                pendingMultiTapRunnable = null
+                emitGestureAction(singleGesture)
+            }
+        }
+        pendingMultiTapRunnable = runnable
+        postDelayed(runnable, MULTI_FINGER_DOUBLE_TAP_MILLISECONDS)
+    }
+
+    private fun emitGestureAction(gesture: TouchpadGesture?) {
+        val actionId = gesture?.let { gestureActions[it.id] }
+            .orEmpty()
+            .ifBlank { TouchpadActionCatalog.NONE }
+        if (actionId != TouchpadActionCatalog.NONE) onGestureAction(actionId)
+    }
+
+    private fun gestureForTap(fingerCount: Int, doubleTap: Boolean): TouchpadGesture? =
+        when {
+            fingerCount == 3 && doubleTap -> TouchpadGesture.THREE_DOUBLE_TAP
+            fingerCount == 3 -> TouchpadGesture.THREE_TAP
+            fingerCount == 4 && doubleTap -> TouchpadGesture.FOUR_DOUBLE_TAP
+            fingerCount == 4 -> TouchpadGesture.FOUR_TAP
+            else -> null
+        }
+
+    private fun gestureForSwipe(fingerCount: Int, direction: Int): TouchpadGesture? = when {
+        fingerCount == 3 && direction == MULTI_DIRECTION_UP -> TouchpadGesture.THREE_SWIPE_UP
+        fingerCount == 3 && direction == MULTI_DIRECTION_DOWN -> TouchpadGesture.THREE_SWIPE_DOWN
+        fingerCount == 3 && direction == MULTI_DIRECTION_LEFT -> TouchpadGesture.THREE_SWIPE_LEFT
+        fingerCount == 3 && direction == MULTI_DIRECTION_RIGHT -> TouchpadGesture.THREE_SWIPE_RIGHT
+        fingerCount == 4 && direction == MULTI_DIRECTION_UP -> TouchpadGesture.FOUR_SWIPE_UP
+        fingerCount == 4 && direction == MULTI_DIRECTION_DOWN -> TouchpadGesture.FOUR_SWIPE_DOWN
+        fingerCount == 4 && direction == MULTI_DIRECTION_LEFT -> TouchpadGesture.FOUR_SWIPE_LEFT
+        fingerCount == 4 && direction == MULTI_DIRECTION_RIGHT -> TouchpadGesture.FOUR_SWIPE_RIGHT
+        else -> null
     }
 
     private fun emitPointer(action: ProtocolV3.PointerAction, pointerId: Int, deltaX: Float, deltaY: Float) {
@@ -325,6 +519,16 @@ class TouchpadView @JvmOverloads constructor(
         return hypot(event.getX(0) - event.getX(1), event.getY(0) - event.getY(1))
     }
 
+    private fun centroid(event: MotionEvent): Pair<Float, Float> {
+        var x = 0f
+        var y = 0f
+        for (index in 0 until event.pointerCount) {
+            x += event.getX(index)
+            y += event.getY(index)
+        }
+        return x / event.pointerCount to y / event.pointerCount
+    }
+
     private fun nextSequence(): Int {
         sequence = if (sequence == Int.MAX_VALUE) 0 else sequence + 1
         return sequence
@@ -332,6 +536,9 @@ class TouchpadView @JvmOverloads constructor(
 
     private fun cancelPointer() {
         removeCallbacks(longPressRunnable)
+        pendingMultiTapRunnable?.let(::removeCallbacks)
+        pendingMultiTapRunnable = null
+        pendingMultiTap = null
         if (leftButtonDown) {
             emitButton(1, false)
             leftButtonDown = false
@@ -355,12 +562,23 @@ class TouchpadView @JvmOverloads constructor(
         lastPinchDistance = 0f
         pinchActive = false
         twoFingerGestureMode = TWO_FINGER_GESTURE_UNDECIDED
+        multiFingerCount = 0
+        multiFingerDownAt = 0L
+        multiFingerMoved = false
+        multiFingerDirection = MULTI_DIRECTION_UNDECIDED
     }
 
     private fun clickSlop(): Float = 18f * resources.displayMetrics.density
 
+    private fun multiFingerSwipeSlop(): Float = 32f * resources.displayMetrics.density
+
+    private data class PendingMultiTap(val fingerCount: Int, val at: Long)
+
     override fun onDetachedFromWindow() {
         removeCallbacks(longPressRunnable)
+        pendingMultiTapRunnable?.let(::removeCallbacks)
+        pendingMultiTapRunnable = null
+        pendingMultiTap = null
         super.onDetachedFromWindow()
     }
 
@@ -371,6 +589,14 @@ class TouchpadView @JvmOverloads constructor(
         private const val TWO_FINGER_GESTURE_UNDECIDED = 0
         private const val TWO_FINGER_GESTURE_SCROLL = 1
         private const val TWO_FINGER_GESTURE_PINCH = 2
+        private const val MULTI_FINGER_UNSUPPORTED = -1
+        private const val MULTI_DIRECTION_UNDECIDED = 0
+        private const val MULTI_DIRECTION_UP = 1
+        private const val MULTI_DIRECTION_DOWN = 2
+        private const val MULTI_DIRECTION_LEFT = 3
+        private const val MULTI_DIRECTION_RIGHT = 4
         private const val MAX_HISTORY_SAMPLES = 4
+        private const val MULTI_FINGER_TAP_MILLISECONDS = 300L
+        private const val MULTI_FINGER_DOUBLE_TAP_MILLISECONDS = 300L
     }
 }

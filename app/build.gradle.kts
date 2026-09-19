@@ -11,8 +11,9 @@ android {
         applicationId = "com.voicespreader.remote"
         minSdk = 23
         targetSdk = 36
-        versionCode = 102471
-        versionName = "1.2.4.71"
+        // 采用 102480 保证高于 1.2.4.71/1.2.4.72 的 Android versionCode。
+        versionCode = 102480
+        versionName = "1.2.4.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

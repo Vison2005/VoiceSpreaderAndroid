@@ -1,7 +1,7 @@
 <resources>
     <string name="app_name">VoiceSpreader</string>
     <string name="title">VoiceSpreader</string>
-    <string name="title_subtitle">设备互联 · v1.2.4.71</string>
+    <string name="title_subtitle">设备互联 · v1.2.4.8</string>
     <string name="service_description">保持 VoiceSpreader 的局域网音频连接和后台恢复</string>
     <string name="notification_channel_name">设备互联</string>
     <string name="notification_channel_description">在后台保持与电脑连接</string>
@@ -35,7 +35,7 @@
     <string name="saved_connecting">连接中</string>
     <string name="saved_forget">移除</string>
     <string name="remote_control_title">手机控制台</string>
-    <string name="remote_control_hint">全屏触摸板：移动光标、单击和双指滚动</string>
+    <string name="remote_control_hint">全屏触摸板：移动光标、双指滚动，以及可自定义的三指/四指手势</string>
     <string name="open_touchpad">打开全屏触摸板</string>
     <string name="windows_playback">将手机作为电脑扬声器</string>
     <string name="playback_waiting">连接电脑后等待 Windows 端启动</string>

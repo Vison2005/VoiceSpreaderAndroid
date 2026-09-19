@@ -61,6 +61,52 @@ class ShortcutStore(context: Context) {
         return defaults().also(::save)
     }
 
+    fun add(command: ShortcutCommand): List<ShortcutCommand> {
+        val updated = list()
+            .filterNot { it.id == command.id }
+            .plus(command)
+        save(updated)
+        return updated
+    }
+
+    companion object {
+        private const val KEY_ITEMS = "items"
+
+        val modifiers: List<String> = listOf("CTRL", "SHIFT", "ALT", "WIN")
+
+        val keys: List<String> = buildList {
+            addAll(('A'..'Z').map(Char::toString))
+            addAll((0..9).map(Int::toString))
+            addAll((1..24).map { "F$it" })
+            addAll(
+                listOf(
+                    "TAB",
+                    "ENTER",
+                    "ESC",
+                    "SPACE",
+                    "BACKSPACE",
+                    "DELETE",
+                    "INSERT",
+                    "HOME",
+                    "END",
+                    "PAGEUP",
+                    "PAGEDOWN",
+                    "LEFT",
+                    "UP",
+                    "RIGHT",
+                    "DOWN",
+                    "PRINTSCREEN",
+                    "MEDIA_PLAY_PAUSE",
+                    "MEDIA_NEXT",
+                    "MEDIA_PREVIOUS",
+                    "VOLUME_MUTE",
+                    "VOLUME_DOWN",
+                    "VOLUME_UP",
+                ),
+            )
+        }
+    }
+
     private fun defaults() = listOf(
         ShortcutCommand("copy", "复制", listOf("CTRL"), "C"),
         ShortcutCommand("paste", "粘贴", listOf("CTRL"), "V"),
@@ -68,7 +114,4 @@ class ShortcutStore(context: Context) {
         ShortcutCommand("desktop", "显示桌面", listOf("META"), "D"),
     )
 
-    private companion object {
-        const val KEY_ITEMS = "items"
-    }
 }

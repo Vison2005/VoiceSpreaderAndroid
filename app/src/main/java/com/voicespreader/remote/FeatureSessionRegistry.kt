@@ -178,7 +178,11 @@ object FeatureSessionRegistry {
     }
 
     private fun capabilities(@Suppress("UNUSED_PARAMETER") context: Context): Set<String> =
-        setOf(ProtocolV3.CAP_TOUCHPAD)
+        setOf(
+            ProtocolV3.CAP_TOUCHPAD,
+            ProtocolV3.CAP_SHORTCUT,
+            ProtocolV3.CAP_APP_LAUNCH,
+        )
 
     fun clear() {
         val currentClient = synchronized(lifecycleLock) {
